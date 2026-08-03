@@ -2,9 +2,10 @@
  * Orchestrates the full company research pipeline described in
  * docs/architecture.md: web search for product/features, a direct homepage
  * fetch, web search for hiring signals, web search for funding news, GPT-4o
- * synthesis of all of that into a structured company profile, a Hunter.io
- * lookup for a CEO/CTO email if one wasn't supplied, and finally persisting
- * the result to Supabase.
+ * synthesis of all of that into a structured company profile, a contact
+ * lookup (Apollo, falling back to Hunter — see
+ * lib/integrations/contact-lookup.ts) for a CEO/CTO email if one wasn't
+ * supplied, and finally persisting the result to Supabase.
  *
  * Every step before synthesis is best-effort: search or fetch failures are
  * caught, logged, and recorded in `incompleteSteps` rather than aborting
@@ -18,7 +19,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { tavilySearch } from "@/lib/integrations/tavily";
 import { fetchPageText } from "@/lib/integrations/webpage";
 import { runJsonCompletion } from "@/lib/integrations/openai";
-import { findExecutiveContact, findEmailForNamedContact } from "@/lib/integrations/hunter";
+import { findExecutiveContact, findEmailForNamedContact } from "@/lib/integrations/contact-lookup";
 import { PROMPTS } from "@/lib/prompts";
 import { logger } from "@/lib/logger";
 import { CONTACT_SOURCE, INDUSTRY, COMPANY_SIZE, COMPANY_STAGE } from "@/lib/constants";
@@ -140,7 +141,7 @@ export async function researchCompany(params: ResearchCompanyParams): Promise<Re
           email: found?.email ?? null,
           linkedin_url: found?.linkedinUrl ?? null,
           email_verified: found?.verified ?? false,
-          found_via: found ? CONTACT_SOURCE.HUNTER : CONTACT_SOURCE.MANUAL,
+          found_via: found ? found.foundVia : CONTACT_SOURCE.MANUAL,
         })
         .select()
         .single();
@@ -163,7 +164,7 @@ export async function researchCompany(params: ResearchCompanyParams): Promise<Re
             email: found.email,
             linkedin_url: found.linkedinUrl,
             email_verified: found.verified,
-            found_via: CONTACT_SOURCE.HUNTER,
+            found_via: found.foundVia,
           })
           .select()
           .single();

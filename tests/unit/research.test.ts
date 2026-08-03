@@ -13,7 +13,7 @@ const { tavilySearchMock, fetchPageTextMock, runJsonCompletionMock, findExecutiv
 vi.mock("@/lib/integrations/tavily", () => ({ tavilySearch: tavilySearchMock }));
 vi.mock("@/lib/integrations/webpage", () => ({ fetchPageText: fetchPageTextMock }));
 vi.mock("@/lib/integrations/openai", () => ({ runJsonCompletion: runJsonCompletionMock }));
-vi.mock("@/lib/integrations/hunter", () => ({
+vi.mock("@/lib/integrations/contact-lookup", () => ({
   findExecutiveContact: findExecutiveContactMock,
   findEmailForNamedContact: findEmailForNamedContactMock,
 }));
@@ -114,6 +114,7 @@ describe("researchCompany", () => {
       title: "CEO",
       linkedinUrl: null,
       verified: true,
+      foundVia: "apollo",
     });
 
     const supabase = createFakeSupabase({});
@@ -126,6 +127,7 @@ describe("researchCompany", () => {
     });
 
     expect(result.contact?.email).toBe("ceo@bayut.com");
+    expect(result.contact?.foundVia).toBe("apollo");
     expect(result.incompleteSteps).not.toContain("contact_discovery");
   });
 });

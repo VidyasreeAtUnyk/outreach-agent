@@ -30,8 +30,17 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required").startsWith("sk-", {
     message: "OPENAI_API_KEY should start with 'sk-'",
   }),
+  // Configurable because the model available on a given API key/budget can
+  // change — see docs/decisions/05-openai-call-budget.md.
+  OPENAI_MODEL: z.string().min(1).default("gpt-5.4-mini"),
   TAVILY_API_KEY: z.string().min(1, "TAVILY_API_KEY is required"),
-  HUNTER_API_KEY: z.string().min(1, "HUNTER_API_KEY is required"),
+
+  // Contact-lookup providers — both optional. lib/integrations/contact-lookup.ts
+  // tries Apollo first, then Hunter, and skips whichever isn't configured;
+  // if neither is set, contact lookup is skipped entirely and the contact
+  // is flagged for manual entry (see docs/decisions/06-apollo-alongside-hunter.md).
+  APOLLO_API_KEY: z.string().optional(),
+  HUNTER_API_KEY: z.string().optional(),
 
   // Phase 2 — not called anywhere yet, see docs/decisions/04-review-before-send.md.
   // Optional so Phase 1 setup doesn't require a Resend account.

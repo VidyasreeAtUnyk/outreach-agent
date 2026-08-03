@@ -2,14 +2,19 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { createMockSupabase } from "./helpers";
 
-const { checkRateLimitMock, researchCompanyMock, matchCompanyToProjectMock, draftEmailMock, scoreApplicationMock } =
-  vi.hoisted(() => ({
-    checkRateLimitMock: vi.fn(),
-    researchCompanyMock: vi.fn(),
-    matchCompanyToProjectMock: vi.fn(),
-    draftEmailMock: vi.fn(),
-    scoreApplicationMock: vi.fn(),
-  }));
+const {
+  checkRateLimitMock,
+  researchCompanyMock,
+  matchCompanyToProjectMock,
+  draftEmailWithScoreMock,
+  deriveScoreResultMock,
+} = vi.hoisted(() => ({
+  checkRateLimitMock: vi.fn(),
+  researchCompanyMock: vi.fn(),
+  matchCompanyToProjectMock: vi.fn(),
+  draftEmailWithScoreMock: vi.fn(),
+  deriveScoreResultMock: vi.fn(),
+}));
 
 let mockSupabase: ReturnType<typeof createMockSupabase>;
 
@@ -17,8 +22,8 @@ vi.mock("@/lib/supabase/server", () => ({ createClient: async () => mockSupabase
 vi.mock("@/lib/ratelimit", () => ({ checkRateLimit: checkRateLimitMock }));
 vi.mock("@/lib/agent/research", () => ({ researchCompany: researchCompanyMock }));
 vi.mock("@/lib/agent/match", () => ({ matchCompanyToProject: matchCompanyToProjectMock }));
-vi.mock("@/lib/agent/draft", () => ({ draftEmail: draftEmailMock }));
-vi.mock("@/lib/agent/score", () => ({ scoreApplication: scoreApplicationMock }));
+vi.mock("@/lib/agent/draft", () => ({ draftEmailWithScore: draftEmailWithScoreMock }));
+vi.mock("@/lib/agent/score", () => ({ deriveScoreResult: deriveScoreResultMock }));
 
 function postRequest(body: unknown) {
   return new NextRequest("http://localhost/api/research", {
@@ -32,8 +37,8 @@ describe("POST /api/research", () => {
     checkRateLimitMock.mockReset().mockReturnValue({ allowed: true, remaining: 9, resetAt: new Date() });
     researchCompanyMock.mockReset();
     matchCompanyToProjectMock.mockReset();
-    draftEmailMock.mockReset();
-    scoreApplicationMock.mockReset();
+    draftEmailWithScoreMock.mockReset();
+    deriveScoreResultMock.mockReset();
     mockSupabase = createMockSupabase([{ data: { id: "draft-1" }, error: null }]);
   });
 
@@ -50,7 +55,7 @@ describe("POST /api/research", () => {
     expect(response.status).toBe(429);
   });
 
-  it("runs the full pipeline and returns 200 with the created ids", async () => {
+  it("runs the full pipeline with exactly one draft+score call and returns 200 with the created ids", async () => {
     researchCompanyMock.mockResolvedValue({
       company: { id: "company-1", industry: "proptech", painPoint: "x", description: "y", techSignals: [], hiringSignals: [] },
       contact: { id: "contact-1", name: "Haider Ali Khan", title: "CEO" },
@@ -63,8 +68,14 @@ describe("POST /api/research", () => {
       needsCustomisation: false,
       customisationNotes: null,
     });
-    draftEmailMock.mockResolvedValue({ subject: "Subject", body: "Body", wordCount: 2 });
-    scoreApplicationMock.mockResolvedValue({ score: 8, reasoning: "strong fit", recommendation: "send" });
+    draftEmailWithScoreMock.mockResolvedValue({
+      subject: "Subject",
+      body: "Body",
+      wordCount: 2,
+      rawScore: 8,
+      scoreReasoning: "strong fit",
+    });
+    deriveScoreResultMock.mockReturnValue({ score: 8, reasoning: "strong fit", recommendation: "send" });
 
     const { POST } = await import("@/app/api/research/route");
     const response = await POST(postRequest({ companyUrl: "https://www.bayut.com" }));
@@ -73,5 +84,6 @@ describe("POST /api/research", () => {
     expect(response.status).toBe(200);
     expect(json.draftId).toBe("draft-1");
     expect(json.companyId).toBe("company-1");
+    expect(draftEmailWithScoreMock).toHaveBeenCalledTimes(1);
   });
 });

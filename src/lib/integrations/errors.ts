@@ -6,16 +6,25 @@
  * philosophy) or abort.
  */
 
-export type IntegrationServiceName = "openai" | "tavily" | "hunter" | "resend";
+export type IntegrationServiceName = "openai" | "tavily" | "hunter" | "apollo" | "resend";
+
+/** Machine-checkable reason, for callers that need to branch on the failure (e.g. api-utils.ts mapping budget exhaustion to a 429). */
+export type IntegrationErrorCode = "budget_exhausted";
 
 export class IntegrationError extends Error {
   readonly service: IntegrationServiceName;
+  readonly code?: IntegrationErrorCode;
   override readonly cause?: unknown;
 
-  constructor(service: IntegrationServiceName, message: string, cause?: unknown) {
+  constructor(
+    service: IntegrationServiceName,
+    message: string,
+    options?: { cause?: unknown; code?: IntegrationErrorCode },
+  ) {
     super(`[${service}] ${message}`);
     this.name = "IntegrationError";
     this.service = service;
-    this.cause = cause;
+    this.cause = options?.cause;
+    this.code = options?.code;
   }
 }

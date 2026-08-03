@@ -1,7 +1,12 @@
 /**
- * Drafts the cold job-application email for a researched company using the
- * matched project as proof of capability. See lib/prompts.ts EMAIL_DRAFT
- * for the full instructions given to the model.
+ * Drafts the cold job-application email for a researched company AND scores
+ * the overall application in the same OpenAI call — see lib/prompts.ts
+ * EMAIL_DRAFT_AND_SCORE. Combined deliberately to spend one call instead of
+ * two against the hard OpenAI call budget (see
+ * docs/decisions/05-openai-call-budget.md). The raw score/reasoning this
+ * returns still needs to go through lib/agent/score.ts's
+ * `deriveScoreResult` to get the final clamped score and deterministic
+ * send/review/skip recommendation.
  */
 import { z } from "zod";
 import { runJsonCompletion } from "@/lib/integrations/openai";
@@ -10,16 +15,18 @@ import { PROFILE } from "@/lib/profile";
 import { EMAIL_CONSTRAINTS } from "@/lib/constants";
 import { logger } from "@/lib/logger";
 import type { Project } from "@/lib/projects";
-import type { DraftEmailResult } from "@/types";
 
-const draftResponseSchema = z.object({
+const draftAndScoreResponseSchema = z.object({
   subject: z.string().min(1),
   body: z.string().min(1),
+  score: z.number(),
+  scoreReasoning: z.string().min(1),
 });
 
 export interface DraftableCompany {
   name: string;
   industry: string | null;
+  size: string | null;
   painPoint: string | null;
   description: string | null;
   techSignals: string[];
@@ -27,26 +34,38 @@ export interface DraftableCompany {
   recentNews: string | null;
 }
 
-export interface DraftEmailParams {
+export interface DraftEmailWithScoreParams {
   company: DraftableCompany;
   contactName: string | null;
   contactTitle: string | null;
   project: Project;
+  /** The match score/reasoning from lib/agent/match.ts, given as context for the scoring half of this call. */
+  match: { score: number; reasoning: string };
   /** The specific role being applied for, if the human specified one when submitting the company. */
   roleAppliedFor?: string;
+}
+
+export interface DraftAndScoreResult {
+  subject: string;
+  body: string;
+  wordCount: number;
+  /** Raw 1-10 score from the model — pass through lib/agent/score.ts's deriveScoreResult before persisting or displaying. */
+  rawScore: number;
+  scoreReasoning: string;
 }
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function buildUserContent(params: DraftEmailParams): string {
-  const { company, contactName, contactTitle, project, roleAppliedFor } = params;
+function buildUserContent(params: DraftEmailWithScoreParams): string {
+  const { company, contactName, contactTitle, project, match, roleAppliedFor } = params;
 
   return JSON.stringify({
     company: {
       name: company.name,
       industry: company.industry,
+      size: company.size,
       painPoint: company.painPoint,
       description: company.description,
       techSignals: company.techSignals,
@@ -77,20 +96,26 @@ function buildUserContent(params: DraftEmailParams): string {
       github: project.github,
       demo: project.demo,
     },
+    matchResult: {
+      score: match.score,
+      reasoning: match.reasoning,
+    },
   });
 }
 
 /**
- * Generates the cold job-application email subject and body for a company/project pair.
- * @param params - the researched company, contact, matched project, and optional role being applied for
- * @returns the drafted subject, body, and computed word count
+ * Generates the cold job-application email and a raw confidence score for a company/project pair in one OpenAI call.
+ * @param params - the researched company, contact, matched project, match result, and optional role being applied for
+ * @returns the drafted subject/body/word count, plus the raw score and reasoning for lib/agent/score.ts to finalize
  */
-export async function draftEmail(params: DraftEmailParams): Promise<DraftEmailResult> {
+export async function draftEmailWithScore(
+  params: DraftEmailWithScoreParams,
+): Promise<DraftAndScoreResult> {
   const response = await runJsonCompletion({
-    systemPrompt: PROMPTS.EMAIL_DRAFT,
+    systemPrompt: PROMPTS.EMAIL_DRAFT_AND_SCORE,
     userContent: buildUserContent(params),
-    schema: draftResponseSchema,
-    label: "email-draft",
+    schema: draftAndScoreResponseSchema,
+    label: "email-draft-and-score",
   });
 
   const wordCount = countWords(response.body);
@@ -117,5 +142,7 @@ export async function draftEmail(params: DraftEmailParams): Promise<DraftEmailRe
     subject: response.subject,
     body: response.body,
     wordCount,
+    rawScore: response.score,
+    scoreReasoning: response.scoreReasoning,
   };
 }

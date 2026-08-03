@@ -9,6 +9,7 @@ import type { User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { checkRateLimit } from "@/lib/ratelimit";
 import { logger } from "@/lib/logger";
+import { IntegrationError } from "@/lib/integrations/errors";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -61,6 +62,10 @@ export function requireWithinRateLimit(userId: string): void {
 export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof ApiError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
+  }
+
+  if (error instanceof IntegrationError && error.code === "budget_exhausted") {
+    return NextResponse.json({ error: error.message }, { status: 429 });
   }
 
   logger.error("unhandled API route error", { error: String(error) });

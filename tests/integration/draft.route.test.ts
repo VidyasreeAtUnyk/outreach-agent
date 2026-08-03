@@ -2,20 +2,22 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { createMockSupabase } from "./helpers";
 
-const { checkRateLimitMock, matchCompanyToProjectMock, draftEmailMock, scoreApplicationMock } = vi.hoisted(() => ({
-  checkRateLimitMock: vi.fn(),
-  matchCompanyToProjectMock: vi.fn(),
-  draftEmailMock: vi.fn(),
-  scoreApplicationMock: vi.fn(),
-}));
+const { checkRateLimitMock, matchCompanyToProjectMock, draftEmailWithScoreMock, deriveScoreResultMock } = vi.hoisted(
+  () => ({
+    checkRateLimitMock: vi.fn(),
+    matchCompanyToProjectMock: vi.fn(),
+    draftEmailWithScoreMock: vi.fn(),
+    deriveScoreResultMock: vi.fn(),
+  }),
+);
 
 let mockSupabase: ReturnType<typeof createMockSupabase>;
 
 vi.mock("@/lib/supabase/server", () => ({ createClient: async () => mockSupabase }));
 vi.mock("@/lib/ratelimit", () => ({ checkRateLimit: checkRateLimitMock }));
 vi.mock("@/lib/agent/match", () => ({ matchCompanyToProject: matchCompanyToProjectMock }));
-vi.mock("@/lib/agent/draft", () => ({ draftEmail: draftEmailMock }));
-vi.mock("@/lib/agent/score", () => ({ scoreApplication: scoreApplicationMock }));
+vi.mock("@/lib/agent/draft", () => ({ draftEmailWithScore: draftEmailWithScoreMock }));
+vi.mock("@/lib/agent/score", () => ({ deriveScoreResult: deriveScoreResultMock }));
 
 function postRequest(body: unknown) {
   return new NextRequest("http://localhost/api/draft", { method: "POST", body: JSON.stringify(body) });
@@ -33,8 +35,10 @@ describe("POST /api/draft", () => {
       needsCustomisation: false,
       customisationNotes: null,
     });
-    draftEmailMock.mockReset().mockResolvedValue({ subject: "Subject", body: "Body", wordCount: 2 });
-    scoreApplicationMock.mockReset().mockResolvedValue({ score: 8, reasoning: "strong fit", recommendation: "send" });
+    draftEmailWithScoreMock
+      .mockReset()
+      .mockResolvedValue({ subject: "Subject", body: "Body", wordCount: 2, rawScore: 8, scoreReasoning: "strong fit" });
+    deriveScoreResultMock.mockReset().mockReturnValue({ score: 8, reasoning: "strong fit", recommendation: "send" });
   });
 
   it("returns 400 for a non-UUID companyId", async () => {

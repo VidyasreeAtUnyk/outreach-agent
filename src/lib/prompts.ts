@@ -47,47 +47,35 @@ Output strictly as JSON matching this shape, no prose outside the JSON:
   "urgencyNotes": string | null
 }`,
 
-  EMAIL_DRAFT: `You are writing a cold job-application email on behalf of a specific job applicant, using their real background and a specific project of theirs as proof of capability. This is a job application, NOT a product pitch — the reader is evaluating whether to hire this person, not whether to buy something.
+  EMAIL_DRAFT_AND_SCORE: `You are doing two things in one pass for a job applicant deciding whether to send a cold job-application email: (1) writing the email, and (2) scoring how strong the application is. These are combined into a single response to conserve a hard-capped OpenAI call budget — see the "score" fields below are just as important as the email itself, not an afterthought.
 
-You will be given: the researched company (what they do, their pain point, tech/hiring signals, recent news), the applicant's profile (background, core strengths, voice guidelines, phrases to never use), the matched project (headline, technical depth, demo/GitHub links), the contact's name and title if known, and the role being applied for if specified.
+You will be given: the researched company (what they do, industry, pain point, tech/hiring signals, size, recent news), the applicant's profile (background, core strengths, voice guidelines, phrases to never use), the matched project (headline, technical depth, demo/GitHub links) with its match score/reasoning from a separate matching step, the contact's name and title if known, and the role being applied for if specified.
 
+Part 1 — the email:
 Tone: direct, human, confident — not salesy. Length: under 150 words total (subject not counted). CEOs and CTOs don't read long cold emails.
-
 Structure:
 - Line 1-2: one specific observation about the company that shows real research (reference the pain point or a concrete signal, not a generic compliment)
 - Line 3-4: who the applicant is + their single most relevant credential for this company
 - Line 5-6: the matched project as capability proof — frame it as evidence of what they can build, not as a product being pitched
 - Line 7: a clear, specific ask — request a 15 minute call
 - Sign-off: name + GitHub link
-
 Never use any of the applicant's "neverSay" phrases verbatim or as close paraphrases. Always include: one specific company detail, one concrete technical proof point from the matched project, and one clear ask.
 
-Output strictly as JSON matching this shape, no prose outside the JSON:
-{
-  "subject": string,
-  "body": string
-}`,
-
-  CONFIDENCE_SCORE: `You are scoring the fit between a job applicant and a company they're considering a cold application to, on a 1-10 scale.
-
-You will be given: the researched company (industry, pain point, tech/hiring signals, size), the applicant's background/strengths, and the matched project with its score/reasoning from the matching step.
-
+Part 2 — the score:
 Score 1-10 based on:
 - industry relevance to the applicant's background (their strongest industries score highest — proptech and fintech given this applicant's portfolio)
 - pain point clarity — can the company's need be clearly and specifically articulated, or is it vague/speculative
 - project match strength — does the matched project genuinely speak the company's language, or is the connection a stretch
 - company signals — are they visibly hiring for AI/engineering roles, indicating they already recognize the need
 - size fit — roughly 50-500 employees is the strongest fit for this direct-to-executive approach; very early pre-hiring startups or large enterprises with formal hiring pipelines score lower on this factor
-
-Constraints:
-- Be willing to score low (1-4) when the fit is genuinely weak — this score exists to help the applicant decide when NOT to spend the effort sending an email, so it must be an honest signal, not automatically optimistic.
-- reasoning must be specific to this company, not generic.
+Be willing to score low (1-4) when the fit is genuinely weak — this score exists to help the applicant decide when NOT to spend the effort sending an email, so it must be an honest signal, not automatically optimistic. scoreReasoning must be specific to this company, not generic, and is independent of the email's own tone — score honestly even if the email you wrote reads well.
 
 Output strictly as JSON matching this shape, no prose outside the JSON:
 {
+  "subject": string,
+  "body": string,
   "score": number,
-  "reasoning": string,
-  "recommendation": "send" | "review" | "skip"
+  "scoreReasoning": string
 }`,
 
   REPLY_RESPONSE: `You are drafting a response to a reply received on a cold job-application email the applicant already sent. This is a reply the applicant will personally review and send themselves — you are drafting a suggestion, not sending anything.

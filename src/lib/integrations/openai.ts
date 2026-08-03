@@ -4,20 +4,82 @@
  * `runJsonCompletion` instead of touching the SDK itself, and gets back a
  * value already validated against the Zod schema it supplies (an external
  * API's response is untrusted input, same as a client request body).
+ *
+ * Every call is metered against a hard budget (the API key in use is capped
+ * at 50 total calls) tracked in the `openai_usage` table — see
+ * docs/decisions/05-openai-call-budget.md. A call is reserved atomically
+ * before the request goes out and only released back if the request itself
+ * never got a response; once OpenAI has answered (even with content that
+ * fails parsing/validation), the call counts, since it was actually spent.
  */
 import OpenAI from "openai";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { z } from "zod";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { IntegrationError } from "@/lib/integrations/errors";
-
-const MODEL = "gpt-4o";
+import { createServiceClient } from "@/lib/supabase/service";
 
 let cachedClient: OpenAI | null = null;
 
 function getClient(): OpenAI {
   cachedClient ??= new OpenAI({ apiKey: env.OPENAI_API_KEY });
   return cachedClient;
+}
+
+interface UsageReservation {
+  allowed: boolean;
+  callsUsed: number;
+  callBudget: number;
+}
+
+/** Atomically reserves one call against the budget. Never throws on budget exhaustion itself — returns allowed: false instead, so the caller can log/report the current counts. */
+async function reserveCall(): Promise<UsageReservation> {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase.rpc("increment_openai_usage").single();
+
+  if (error || !data) {
+    logger.error("failed to check OpenAI call budget", { error: error?.message });
+    throw new IntegrationError("openai", "failed to check the OpenAI call budget", { cause: error });
+  }
+
+  const row = data as { calls_used: number; call_budget: number; allowed: boolean };
+  return { allowed: row.allowed, callsUsed: row.calls_used, callBudget: row.call_budget };
+}
+
+/** Releases a reservation that never reached OpenAI (the request failed before any response), so a network error doesn't burn budget for nothing. Best-effort — logged, not thrown, if it fails. */
+async function releaseCall(): Promise<void> {
+  const supabase = createServiceClient();
+  const { error } = await supabase.rpc("decrement_openai_usage");
+  if (error) {
+    logger.error("failed to release an unused OpenAI call reservation", { error: error.message });
+  }
+}
+
+/**
+ * Reads the current OpenAI call budget usage without reserving a call.
+ * @param supabase - a request-scoped Supabase client (RLS allows any authenticated user to read this row)
+ * @returns calls used, the total budget, and calls remaining
+ */
+export async function getOpenAiUsage(
+  supabase: SupabaseClient,
+): Promise<{ callsUsed: number; callBudget: number; remaining: number }> {
+  const { data, error } = await supabase
+    .from("openai_usage")
+    .select("calls_used, call_budget")
+    .eq("id", "global")
+    .single();
+
+  if (error || !data) {
+    logger.warn("failed to read OpenAI usage", { error: error?.message });
+    return { callsUsed: 0, callBudget: 0, remaining: 0 };
+  }
+
+  return {
+    callsUsed: data.calls_used,
+    callBudget: data.call_budget,
+    remaining: Math.max(0, data.call_budget - data.calls_used),
+  };
 }
 
 interface RunJsonCompletionParams<T> {
@@ -32,19 +94,35 @@ interface RunJsonCompletionParams<T> {
 }
 
 /**
- * Runs a single chat completion against GPT-4o with JSON-object output mode,
- * parses the response, and validates it against the given Zod schema.
+ * Runs a single chat completion (model from OPENAI_MODEL) with JSON-object
+ * output mode, parses the response, and validates it against the given Zod
+ * schema. Reserves one call against the hard budget before making the
+ * request and refuses to proceed once exhausted.
  * @param params - system prompt, user content, output schema, and a log label
  * @returns the parsed and validated response, typed as T
- * @throws IntegrationError if the request fails, returns empty content, isn't valid JSON, or fails schema validation
+ * @throws IntegrationError (code 'budget_exhausted' if the call budget is used up) if the budget check fails, the request fails, returns empty content, isn't valid JSON, or fails schema validation
  */
 export async function runJsonCompletion<T>(params: RunJsonCompletionParams<T>): Promise<T> {
   const { systemPrompt, userContent, schema, label } = params;
 
+  const reservation = await reserveCall();
+  if (!reservation.allowed) {
+    logger.error("OpenAI call budget exhausted, refusing to make more calls", {
+      label,
+      callsUsed: reservation.callsUsed,
+      callBudget: reservation.callBudget,
+    });
+    throw new IntegrationError(
+      "openai",
+      `call budget exhausted (${reservation.callsUsed}/${reservation.callBudget} used) — refusing to make an OpenAI call for ${label}`,
+      { code: "budget_exhausted" },
+    );
+  }
+
   let raw: string | null | undefined;
   try {
     const completion = await getClient().chat.completions.create({
-      model: MODEL,
+      model: env.OPENAI_MODEL,
       response_format: { type: "json_object" },
       temperature: 0.4,
       messages: [
@@ -55,7 +133,8 @@ export async function runJsonCompletion<T>(params: RunJsonCompletionParams<T>): 
     raw = completion.choices[0]?.message?.content;
   } catch (cause) {
     logger.error("openai completion request failed", { label, cause: String(cause) });
-    throw new IntegrationError("openai", `completion request failed for ${label}`, cause);
+    await releaseCall();
+    throw new IntegrationError("openai", `completion request failed for ${label}`, { cause });
   }
 
   if (!raw) {
@@ -67,7 +146,7 @@ export async function runJsonCompletion<T>(params: RunJsonCompletionParams<T>): 
     parsedJson = JSON.parse(raw);
   } catch (cause) {
     logger.error("openai response was not valid JSON", { label, raw });
-    throw new IntegrationError("openai", `response for ${label} was not valid JSON`, cause);
+    throw new IntegrationError("openai", `response for ${label} was not valid JSON`, { cause });
   }
 
   const result = schema.safeParse(parsedJson);

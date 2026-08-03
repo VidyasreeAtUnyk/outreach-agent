@@ -43,6 +43,13 @@ rejected → Consequences:
 - [04-review-before-send.md](decisions/04-review-before-send.md) — why
   sending stays manual (Resend stubbed, not wired up) and what's explicitly
   deferred to later phases.
+- [05-external-api-budgets.md](decisions/05-external-api-budgets.md) — how
+  the hard 50-call OpenAI cap, 1000/month Tavily quota, and 90/cycle
+  Apollo quota are tracked and enforced, and why drafting + scoring share
+  one OpenAI call.
+- [06-apollo-alongside-hunter.md](decisions/06-apollo-alongside-hunter.md)
+  — why Apollo.io was added as a second contact-lookup provider (tried
+  before Hunter), and why LinkedIn is still not a data source.
 
 [architecture.md](architecture.md) has the full system diagram, layering
 rules, data model, and matching/scoring logic. [prompts.md](prompts.md) is
@@ -84,9 +91,12 @@ Run the migration against your Supabase project:
 supabase db push
 ```
 
-or paste the contents of `supabase/migrations/001_initial.sql` into the
-Supabase SQL editor. This creates `companies`, `contacts`, `drafts`,
-`replies`, and their RLS policies.
+or paste the contents of each file in `supabase/migrations/` (in order)
+into the Supabase SQL editor. `001_initial.sql` creates `companies`,
+`contacts`, `drafts`, `replies`, and their RLS policies; `002_openai_usage.sql`,
+`003_tavily_usage.sql`, and `004_apollo_usage.sql` create the external API
+usage-tracking tables described in
+[decisions/05-external-api-budgets.md](decisions/05-external-api-budgets.md).
 
 ### 4. (Optional) Seed sample data
 
@@ -111,6 +121,10 @@ Supabase dashboard under Authentication, or enable sign-up), and go to
 
 ## How to use it day-to-day
 
+0. Check the dashboard's usage cards before a research session — the
+   OpenAI budget never resets (50 calls total, 2 per research/regenerate),
+   while Tavily's 1000 credits/month and Apollo's 90 credits/cycle both
+   reset periodically. All three turn amber then red as they run low.
 1. Find a company you want to apply to. Go to `/research`, paste its URL.
 2. Wait for research + drafting to finish (progress shown live), then you
    land on `/review/[id]` automatically.

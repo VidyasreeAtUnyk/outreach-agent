@@ -220,3 +220,126 @@ research/review/tracker flow end-to-end — that needs real Supabase,
 OpenAI, Tavily, and Hunter credentials, which weren't available in this
 environment. That's the first thing to do manually after filling in
 `.env.local` with real keys.
+
+## Phase 12 — External API budgets (OpenAI 50-call cap, Tavily 1000/month)
+
+**Built:** `supabase/migrations/002_openai_usage.sql` and
+`003_tavily_usage.sql` — atomic reserve-before-call Postgres functions
+(`increment_openai_usage`/`increment_tavily_usage`, plus matching
+`decrement_*` release functions for requests that never got a response).
+Wired into `lib/integrations/openai.ts`'s `runJsonCompletion` and
+`lib/integrations/tavily.ts`'s `tavilySearch`, the only two call sites for
+either API. `getOpenAiUsage`/`getTavilyUsage` expose the counters; the
+dashboard shows both as color-shifting stat cards
+(`src/app/(dashboard)/page.tsx`'s new `UsageCard`). Added `OPENAI_MODEL`
+env var (default `gpt-5.4-mini`) so the model isn't hardcoded. Full
+reasoning in `docs/decisions/05-external-api-budgets.md`.
+
+**Decision:** OpenAI exhaustion is a hard failure (`IntegrationError` with
+`code: 'budget_exhausted'`, mapped to a `429` in `lib/api-utils.ts`);
+Tavily exhaustion degrades silently (returns `[]`, same as any other
+Tavily failure) because `tavilySearch` already treated failures as
+best-effort before this change — see `docs/architecture.md`'s error-
+handling philosophy, which this is consistent with rather than a new
+carve-out.
+
+**Decision:** Combined `lib/agent/draft.ts` and `lib/agent/score.ts`'s
+OpenAI calls into one (`EMAIL_DRAFT_AND_SCORE` in `lib/prompts.ts`),
+cutting every research/regenerate run from 3 calls to 2. Against a
+50-call *lifetime* cap this roughly doubles how many companies can be
+researched (≈16 → ≈25). `score.ts` is now a pure function
+(`deriveScoreResult`) with no OpenAI call — it just clamps the model's
+raw score and derives the recommendation deterministically, which was
+already its role for the recommendation half before this change.
+
+**Bug found while writing the reserve/release tests:** the two RPC calls
+in `lib/integrations/openai.ts`/`tavily.ts` are used two different ways —
+`.rpc(name).single()` for the increment (needs the row back) and a bare
+`await .rpc(name)` for the decrement (just needs the error, if any). The
+initial test mock's fake `.rpc()` only implemented `.single()`, so the
+decrement-path tests hung awaiting a non-thenable. **Fix:** the test
+double's `.rpc()` result implements both `.single()` and `.then()` so it
+works either way tests/unit/openai-budget.test.ts and
+tests/unit/tavily-budget.test.ts call it.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (41/41 passing, including 8 new reserve/release/skip tests
+across the two budget test files), `next build` (clean).
+
+## Phase 13 — Apollo.io as a second contact-lookup provider
+
+**Context:** the Hunter.io account being used couldn't sign in with a
+personal email address — an account/provider-side issue, not something
+fixable in this codebase. Rather than block the whole app on that, added
+Apollo.io as a second provider and made contact lookup degrade across
+both instead of failing outright when one is unavailable.
+
+**Built:** `lib/integrations/contact.ts` (shared `ContactLookupResult`
+type, including a new `foundVia: 'apollo' | 'hunter'` field, in its own
+dependency-free file so `hunter.ts` and `apollo.ts` can both use it
+without importing each other), `lib/integrations/apollo.ts` (mirrors
+`hunter.ts`'s two entry points — `findExecutiveContact`,
+`findEmailForNamedContact` — against Apollo's people-search and
+people-match endpoints), `lib/integrations/contact-lookup.ts` (the new
+orchestrator: tries Apollo, falls back to Hunter, returns null if neither
+finds anything). `lib/agent/research.ts` now imports from
+`contact-lookup.ts` instead of `hunter.ts` directly. Made `HUNTER_API_KEY`
+optional (was required) and added optional `APOLLO_API_KEY` — each
+provider's wrapper returns `null` immediately if its key is unset, so any
+combination of zero/one/two configured providers degrades gracefully
+rather than failing to start.
+
+**Decision:** Apollo goes first in the try-chain purely because it's the
+provider actually reachable right now — not a judgment that Apollo is
+better. If Hunter access is restored, both still run; Apollo's result is
+just preferred when both would find one. Full reasoning, including why
+LinkedIn is still out of scope regardless of this change, in
+`docs/decisions/06-apollo-alongside-hunter.md`.
+
+**Decision:** Apollo's API returns masked placeholder emails (e.g.
+`email_not_unlocked@domain.com`) instead of erroring when the account's
+plan hasn't unlocked a real address. `apollo.ts` explicitly detects and
+rejects that pattern rather than saving it as a real contact email.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (50/50 passing — added `tests/unit/apollo.test.ts`,
+`tests/unit/contact-lookup.test.ts`, and updated
+`tests/unit/research.test.ts`'s mock path from `hunter` to
+`contact-lookup`).
+
+## Phase 14 — Apollo credit budget (90/cycle)
+
+**Context:** the newly-added Apollo.io key turned out to also have a
+tight, real limit — 90 credits per billing cycle — so it needed the same
+tracked-budget treatment as OpenAI and Tavily from
+`docs/decisions/05-external-api-budgets.md`, applied immediately rather
+than left as a gap.
+
+**Built:** `supabase/migrations/004_apollo_usage.sql` — same
+monthly-bucketed shape as `tavily_usage`, with
+`increment_apollo_usage()`/`decrement_apollo_usage()` atomic
+reserve/release functions. Wired into both entry points of
+`lib/integrations/apollo.ts` (restructured to split the network-request
+try/catch, which releases the reservation, from the response-processing
+try/catch, which doesn't — matching the pattern already used in
+`tavily.ts`). Added `getApolloUsage` and a third dashboard `UsageCard`
+(grid widened from 2 to 3 columns).
+
+**Decision:** treats every Apollo request as costing 1 credit, regardless
+of whether it actually unlocks a new email. This is a deliberate
+overestimate — Apollo's real accounting may only deduct credits on a
+genuine reveal — chosen because undercounting remaining budget in the
+dashboard is a minor inconvenience, while overrunning the real 90/cycle
+cap is the failure mode actually worth avoiding. Documented as a rejected
+alternative ("precise Apollo credit accounting") in
+`docs/decisions/05-external-api-budgets.md` rather than silently assumed.
+
+**Decision:** budget exhaustion for Apollo returns `null` (not a thrown
+error) — same as any other Apollo failure — since `contact-lookup.ts`
+already falls back to Hunter regardless of why Apollo came back empty.
+No behavior change needed in the orchestrator itself.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (53/53 passing — extended `tests/unit/apollo.test.ts` with a
+credit-budget mock and 3 new reserve/release/skip tests, mirroring
+`tests/unit/tavily-budget.test.ts`), `next build` (clean).

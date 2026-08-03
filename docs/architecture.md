@@ -18,7 +18,7 @@ reviewed, human-approved cold job-application email.
                     │    ├─▶ lib/integrations/tavily.ts  (search)  │
                     │    ├─▶ fetch()                     (homepage)│
                     │    ├─▶ lib/integrations/openai.ts  (synth)   │
-                    │    └─▶ lib/integrations/hunter.ts  (email)   │
+                    │    └─▶ contact-lookup.ts (Apollo→Hunter)     │
                     │    │                                        │
                     │    ▼                                        │
                     │  supabase: companies, contacts               │
@@ -26,9 +26,13 @@ reviewed, human-approved cold job-application email.
                     │    ▼                                        │
                     │  POST /api/draft                             │
                     │    │                                        │
-                    │    ├─▶ lib/agent/match.ts   (pick project)   │
-                    │    ├─▶ lib/agent/draft.ts    (write email)   │
-                    │    └─▶ lib/agent/score.ts    (confidence)    │
+                    │    ├─▶ lib/agent/match.ts   (pick project,   │
+                    │    │                          no OpenAI call)│
+                    │    ├─▶ lib/agent/draft.ts    (write email +  │
+                    │    │                          raw score, one │
+                    │    │                          OpenAI call)   │
+                    │    └─▶ lib/agent/score.ts    (finalize score,│
+                    │                               no OpenAI call)│
                     │    │                                        │
                     │    ▼                                        │
                     │  supabase: drafts (status='pending')         │
@@ -58,8 +62,8 @@ manual in Phase 1.
   do not contain business logic. API routes (`app/api/**/route.ts`) validate
   input with Zod, call into `lib/`, and shape the HTTP response — they don't
   implement the logic themselves.
-- **`components/`** — presentation. No direct calls to OpenAI/Tavily/Hunter/
-  Supabase from a component; components receive data as props or call
+- **`components/`** — presentation. No direct calls to OpenAI/Tavily/
+  Apollo/Hunter/Supabase from a component; components receive data as props or call
   `/api/*` routes, they never import `lib/integrations/*` directly. This is
   enforced by convention (see `docs/decisions` for the reasoning) and
   checked in code review — see the project's engineering standards.
@@ -81,11 +85,12 @@ manual in Phase 1.
 ## Error handling philosophy
 
 The research pipeline (`lib/agent/research.ts`) is the one place in the app
-that calls three separate third-party APIs in sequence for a single
-operation. Any one of Tavily, the homepage fetch, or Hunter can fail
-independently (timeout, rate limit, no results) without that being a bug —
-company websites go down, Hunter doesn't have every email. The pipeline
-therefore treats each step as best-effort:
+that calls multiple third-party APIs in sequence for a single operation.
+Any one of Tavily, the homepage fetch, or the Apollo/Hunter contact lookup
+can fail independently (timeout, rate limit, no results, a provider not
+being configured at all) without that being a bug — company websites go
+down, neither Apollo nor Hunter has every email. The pipeline therefore
+treats each step as best-effort:
 
 - Every step is wrapped so a thrown error is caught, logged via
   `lib/logger.ts` with which step failed and why, and turned into a
@@ -94,9 +99,12 @@ therefore treats each step as best-effort:
   useful at all) receives whatever partial data is available and is
   prompted to say so explicitly (e.g. "recent news: unknown") rather than
   inventing detail to fill gaps.
-- If Hunter finds no verified email, the contact is still saved with
-  `email = null`, `email_verified = false`, and the review UI flags it for
-  manual entry instead of blocking the whole company from being researched.
+- Contact lookup (`lib/integrations/contact-lookup.ts`) tries Apollo, then
+  Hunter, and treats "not configured" the same as "not found" — see
+  [[decisions/06-apollo-alongside-hunter]]. If neither finds a verified
+  email, the contact is still saved with `email = null`,
+  `email_verified = false`, and the review UI flags it for manual entry
+  instead of blocking the whole company from being researched.
 - The orchestrator only throws (failing the whole `POST /api/research` call)
   if the OpenAI synthesis step itself fails, since a company record with no
   synthesized understanding isn't useful to save.
@@ -112,8 +120,9 @@ section is a summary, not the source of truth):
   url, industry, size, stage, location), AI-generated `description` and
   `pain_point`, and array fields for `tech_signals` / `hiring_signals`.
 - **`contacts`** — one row per person at a company (usually the CEO/CTO),
-  linked by `company_id`, with `email_verified` reflecting whether Hunter
-  (or manual entry) confirmed the address.
+  linked by `company_id`, with `email_verified` reflecting whether Apollo,
+  Hunter, or manual entry confirmed the address, and `found_via` recording
+  which.
 - **`drafts`** — one row per drafted email, linked to both `company_id` and
   `contact_id`. Carries the matched project, confidence score + reasoning,
   and a `status` state machine: `pending → approved|rejected`, and
@@ -141,13 +150,26 @@ projects, each tagged with `relevantIndustries` and `relevantPainPoints`.
 and returns the top-scoring project plus a human-readable `reasoning`
 string (used directly in the review UI's "Why" line) and whether the
 project's demo needs a customization note before it's sent (e.g. adding a
-UAE-specific example). `lib/agent/score.ts` is a separate, differently
-weighted scoring function — it doesn't ask "which project fits best," it
-asks "how strong is this whole application," folding in company size fit
-and hiring signals that `match.ts` doesn't consider. Keeping these as two
-functions (rather than one combined score) means the review UI can show
-"why this project" and "why this confidence" as independently understandable
-numbers instead of one opaque blended score.
+UAE-specific example). This runs synchronously with no OpenAI call — the
+matching signal is already structured data by the time it runs, so a
+weighted keyword-overlap score is cheaper and more testable than asking a
+model to re-derive the same judgment.
+
+Confidence scoring asks a different question than matching — not "which
+project fits best" but "how strong is this whole application," folding in
+company size fit and hiring signals that `match.ts` doesn't consider. It's
+generated by the model *in the same OpenAI call as the email draft*
+(`lib/agent/draft.ts`'s `draftEmailWithScore`, using the
+`EMAIL_DRAFT_AND_SCORE` prompt) rather than a separate call, specifically
+to conserve the hard OpenAI call budget — see
+[[decisions/05-external-api-budgets]]. `lib/agent/score.ts`'s
+`deriveScoreResult` then takes that raw score and reasoning and
+deterministically clamps it to 1-10 and derives the send/review/skip
+recommendation — it makes no OpenAI call itself. Keeping match reasoning
+and confidence reasoning as two separate text fields (rather than one
+blended score) means the review UI can show "why this project" and "why
+this confidence" as independently understandable numbers instead of one
+opaque blend.
 
 ## Rate limiting
 
@@ -157,3 +179,24 @@ server-side before any external API is called. This exists primarily as a
 cost/runaway-loop guard for a single-user tool, not as an anti-abuse
 measure against outside traffic (the app is authenticated — see
 [[decisions/03-supabase-for-tracking]]).
+
+This is a different mechanism from, and in addition to, the hard OpenAI/
+Tavily usage budgets described next — the rate limit throttles *how fast*
+one user can fire requests; the budgets track *how much of a finite,
+external quota* is left, in-memory vs. database-backed, per-hour vs.
+lifetime-or-monthly. Both apply to the same routes.
+
+## External API usage budgets
+
+The OpenAI key in use is capped at 50 calls total (not recurring); the
+Tavily key at 1000 search credits per calendar month. Both are tracked in
+Postgres (`openai_usage`, `tavily_usage`) with atomic reserve-before-call
+functions, so the counters can't be raced past and survive serverless
+restarts — see [[decisions/05-external-api-budgets]] for the full
+reasoning, including why OpenAI exhaustion is a hard `429` failure while
+Tavily exhaustion degrades silently (consistent with Tavily search already
+being best-effort per the error-handling philosophy above). The
+`lib/agent/draft.ts` + `lib/agent/score.ts` split also changed as part of
+this: drafting and scoring now happen in one combined OpenAI call instead
+of two, to conserve the 50-call budget. Both remaining/used counts are
+shown on the dashboard.

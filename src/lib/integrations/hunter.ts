@@ -1,7 +1,13 @@
 /**
  * Typed wrapper around the Hunter.io API, used to find a CEO/CTO email
  * address for a researched company when one wasn't supplied manually. This
- * is the only file that calls Hunter directly.
+ * is the only file that calls Hunter directly — lib/integrations/contact-lookup.ts
+ * is what actually calls it, as a fallback after Apollo (see
+ * docs/decisions/06-apollo-alongside-hunter.md for why Apollo tries first).
+ *
+ * HUNTER_API_KEY is optional: if unset, both entry points below return null
+ * immediately, same as "not found," so contact-lookup.ts's fallback still
+ * works with only Apollo configured.
  *
  * Two entry points:
  * - `findExecutiveContact` — given just a domain, searches all known emails
@@ -15,6 +21,7 @@ import { z } from "zod";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { IntegrationError } from "@/lib/integrations/errors";
+import type { ContactLookupResult } from "@/lib/integrations/contact";
 
 const HUNTER_BASE_URL = "https://api.hunter.io/v2";
 const EXECUTIVE_POSITION_KEYWORDS = ["ceo", "cto", "founder", "co-founder", "chief"];
@@ -46,14 +53,6 @@ const emailFinderResponseSchema = z.object({
   }),
 });
 
-export interface HunterContact {
-  email: string;
-  name: string | null;
-  title: string | null;
-  linkedinUrl: string | null;
-  verified: boolean;
-}
-
 function extractDomain(companyUrl: string): string {
   try {
     return new URL(companyUrl).hostname.replace(/^www\./, "");
@@ -72,7 +71,9 @@ function isExecutivePosition(position: string | null | undefined, seniority: str
  * @param companyUrl - the company's homepage URL
  * @returns the best-matching executive contact, or null if none was found or the request failed
  */
-export async function findExecutiveContact(companyUrl: string): Promise<HunterContact | null> {
+export async function findExecutiveContact(companyUrl: string): Promise<ContactLookupResult | null> {
+  if (!env.HUNTER_API_KEY) return null;
+
   const domain = extractDomain(companyUrl);
 
   try {
@@ -117,6 +118,7 @@ export async function findExecutiveContact(companyUrl: string): Promise<HunterCo
       title: best.position ?? null,
       linkedinUrl: best.linkedin ?? null,
       verified: (best.confidence ?? 0) >= 50,
+      foundVia: "hunter",
     };
   } catch (cause) {
     logger.warn("hunter domain-search failed, contact will need manual entry", {
@@ -138,7 +140,9 @@ export async function findEmailForNamedContact(
   companyUrl: string,
   firstName: string,
   lastName: string,
-): Promise<HunterContact | null> {
+): Promise<ContactLookupResult | null> {
+  if (!env.HUNTER_API_KEY) return null;
+
   const domain = extractDomain(companyUrl);
 
   try {
@@ -177,6 +181,7 @@ export async function findEmailForNamedContact(
       title: parsed.data.data.position ?? null,
       linkedinUrl: parsed.data.data.linkedin_url ?? null,
       verified: (parsed.data.data.score ?? 0) >= 50,
+      foundVia: "hunter",
     };
   } catch (cause) {
     logger.warn("hunter email-finder failed, contact will need manual entry", {

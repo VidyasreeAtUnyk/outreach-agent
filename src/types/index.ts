@@ -133,13 +133,6 @@ export interface MatchResult {
   customisationNotes: string | null;
 }
 
-/** Output of lib/agent/draft.ts — the drafted cold email, pre-persistence. */
-export interface DraftEmailResult {
-  subject: string;
-  body: string;
-  wordCount: number;
-}
-
 /** Output of lib/agent/score.ts — confidence that this application is worth sending. */
 export interface ScoreResult {
   score: number;

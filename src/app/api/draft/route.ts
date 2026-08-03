@@ -10,8 +10,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { requireUser, requireWithinRateLimit, toErrorResponse, ApiError } from "@/lib/api-utils";
 import { matchCompanyToProject } from "@/lib/agent/match";
-import { draftEmail } from "@/lib/agent/draft";
-import { scoreApplication } from "@/lib/agent/score";
+import { draftEmailWithScore } from "@/lib/agent/draft";
+import { deriveScoreResult } from "@/lib/agent/score";
 import { getProjectById } from "@/lib/projects";
 import { mapCompanyRow, mapContactRow } from "@/lib/supabase/mappers";
 
@@ -54,15 +54,14 @@ export async function POST(request: NextRequest) {
     const match = matchCompanyToProject(company);
     const project = getProjectById(match.projectId);
 
-    const [draftContent, score] = await Promise.all([
-      draftEmail({
-        company,
-        contactName: contact?.name ?? null,
-        contactTitle: contact?.title ?? null,
-        project,
-      }),
-      scoreApplication({ company, project, match }),
-    ]);
+    const draftContent = await draftEmailWithScore({
+      company,
+      contactName: contact?.name ?? null,
+      contactTitle: contact?.title ?? null,
+      project,
+      match,
+    });
+    const score = deriveScoreResult(draftContent.rawScore, draftContent.scoreReasoning);
 
     const { data: draftRow, error: draftError } = await supabase
       .from("drafts")
