@@ -23,6 +23,7 @@ export interface Database {
           tech_signals: string[];
           hiring_signals: string[];
           recent_news: string | null;
+          research_status: string;
           created_at: string;
           updated_at: string;
         };

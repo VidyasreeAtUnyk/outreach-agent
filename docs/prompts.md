@@ -343,3 +343,66 @@ No behavior change needed in the orchestrator itself.
 `vitest run` (53/53 passing — extended `tests/unit/apollo.test.ts` with a
 credit-budget mock and 3 new reserve/release/skip tests, mirroring
 `tests/unit/tavily-budget.test.ts`), `next build` (clean).
+
+## Phase 15 — Company discovery, and research surviving downstream failures
+
+**Context:** before running the app for the first time, walked through
+what happens if the OpenAI/Tavily/Apollo budgets run out mid-session.
+Found a real gap: `POST /api/research` ran research then match/draft/score
+in one request — if drafting threw after research had already persisted
+the company, the route still propagated the failure and the human had no
+way to see or use the research that *did* succeed. Also decided, after
+clarifying the request, to build "automatic company discovery" now
+instead of leaving it deferred (see `docs/decisions/04-review-before-send.md`'s
+original deferred-features list) — with the explicit constraint that
+discovery must not itself become a way to blow through the 50-call OpenAI
+budget.
+
+**Built:**
+- `supabase/migrations/005_company_discovery.sql` — `companies.research_status`
+  (`'discovered' | 'researched'`, default `'researched'` so existing rows
+  are unaffected) and a `unique (user_id, url)` constraint.
+- `lib/agent/discover.ts` — one Tavily search + exactly one OpenAI call
+  (`PROMPTS.COMPANY_DISCOVERY`) to extract clean company name/URL/reason
+  triples from noisy search results, persisted immediately as
+  `'discovered'` stub rows, deduped against existing companies by domain.
+  `POST /api/discover` (rate-limited like the other AI-calling routes).
+- `lib/agent/research.ts` now `upsert`s the company on `(user_id, url)`
+  instead of always inserting, so researching a discovered stub promotes
+  that same row instead of creating a duplicate.
+- `POST /api/research` now catches match/draft/score failures separately
+  from research failures: research failing still fails the whole request
+  (nothing useful to save), but a downstream failure after research
+  succeeded now returns 200 with the saved `companyId`/`contactId`,
+  `draftId: null`, and a `draftError` message.
+- Three new pages: `/discover` (query form + results), `/companies` (every
+  company regardless of state, with the one action that makes sense for
+  each — Research now / Generate draft / View draft, via a shared
+  `CompanyActions` client component), `/companies/[id]` (single-company
+  detail, reusing a `CompanyResearchPanel` extracted from `/review/[id]`
+  so research looks identical with or without a draft attached).
+  `CompanyForm.tsx` now redirects to the company detail page instead of a
+  dead end when drafting fails.
+- Extracted `extractDomain` (previously duplicated in `hunter.ts` and
+  `apollo.ts`) into `lib/utils.ts` since `discover.ts` needed it too — a
+  third occurrence crossed the threshold for pulling it out.
+- Dashboard now splits "Researched" from "Discovered" in its stats instead
+  of counting all `companies` rows as researched.
+
+**Decision:** discovery costs one OpenAI call per *search run*, never per
+candidate — auto-researching every discovered candidate was explicitly
+rejected (would burn 20-30+ calls per discovery run against the 50-call
+lifetime cap). The human picks which candidates are worth a full research
+pass. Full reasoning in `docs/decisions/07-company-discovery.md`.
+
+**Decision:** reused the `companies` table for discovery stubs (every
+research field was already nullable) rather than a separate table —
+promoting a stub to fully-researched is a plain `UPDATE` via the new
+upsert, not a cross-table migration.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (60/60 passing — added `tests/unit/discover.test.ts`,
+`tests/integration/discover.route.test.ts`, a new partial-success test in
+`tests/integration/research.route.test.ts`, and fixed the fake Supabase
+client in `tests/unit/research.test.ts` to support `.upsert()`), `next build`
+(clean, 20 routes).

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ConfidenceScore } from "@/components/review/ConfidenceScore";
 import { EmailPreview } from "@/components/review/EmailPreview";
+import { CompanyResearchPanel } from "@/components/company/CompanyResearchPanel";
 
 /** Full review UI for a single draft: research context, project match, and the editable email itself. */
 export default async function ReviewDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -64,24 +65,7 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Company research</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3 text-sm">
-          <Field label="Pain point identified">{company.painPoint ?? "Unknown"}</Field>
-          <Field label="Hiring signals">
-            {company.hiringSignals.length > 0 ? company.hiringSignals.join(", ") : "None found"}
-          </Field>
-          <Field label="Tech signals">
-            {company.techSignals.length > 0 ? company.techSignals.join(", ") : "None found"}
-          </Field>
-          <Field label="Recent news">{company.recentNews ?? "Unknown"}</Field>
-          {!contact?.email && (
-            <p className="text-amber-600">No verified contact email — flagged for manual entry.</p>
-          )}
-        </CardContent>
-      </Card>
+      <CompanyResearchPanel company={company} contact={contact} />
 
       <Card>
         <CardHeader>

@@ -30,7 +30,8 @@ const PROGRESS_MESSAGES = [
 ] as const;
 
 interface ResearchResponse {
-  draftId: string;
+  draftId: string | null;
+  draftError: string | null;
   companyId: string;
   contactId: string | null;
   incompleteSteps: string[];
@@ -88,7 +89,14 @@ export function CompanyForm() {
       }
 
       const result = json as ResearchResponse;
-      router.push(ROUTES.REVIEW_DETAIL(result.draftId));
+      if (result.draftId) {
+        router.push(ROUTES.REVIEW_DETAIL(result.draftId));
+        return;
+      }
+      // Research succeeded but drafting failed (e.g. OpenAI budget exhausted)
+      // — the company is still saved, so go to its detail page instead of
+      // losing the result. See docs/decisions/07-company-discovery.md.
+      router.push(ROUTES.COMPANY_DETAIL(result.companyId));
     } catch {
       setError("Research failed — check your connection and try again.");
       setIsSubmitting(false);

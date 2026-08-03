@@ -18,19 +18,23 @@ vi.mock("@/lib/integrations/contact-lookup", () => ({
   findEmailForNamedContact: findEmailForNamedContactMock,
 }));
 
-/** Minimal fake Supabase client supporting the .from().insert().select().single() chain used by research.ts. */
+/** Minimal fake Supabase client supporting the .from().insert/upsert().select().single() chain used by research.ts. */
 function createFakeSupabase(rowsByTable: Record<string, Record<string, unknown>>) {
   return {
-    from: (table: string) => ({
-      insert: (values: Record<string, unknown>) => ({
+    from: (table: string) => {
+      const respond = (values: Record<string, unknown>) => ({
         select: () => ({
           single: async () => ({
             data: { id: `${table}-id`, ...values, ...rowsByTable[table] },
             error: null,
           }),
         }),
-      }),
-    }),
+      });
+      return {
+        insert: respond,
+        upsert: respond,
+      };
+    },
   };
 }
 

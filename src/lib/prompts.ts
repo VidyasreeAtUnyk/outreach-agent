@@ -94,6 +94,29 @@ Output strictly as JSON matching this shape, no prose outside the JSON:
   "sentiment": "positive" | "neutral" | "negative",
   "suggestedResponse": string
 }`,
+
+  COMPANY_DISCOVERY: `You are extracting a clean list of real, distinct companies from raw web search results, for a job applicant looking for companies to research and potentially apply to.
+
+You will be given a target description (e.g. "AI agent companies with UAE presence") and a set of web search results (title, url, content) gathered for that description. The search results are noisy — some will be directory/listicle pages ("Top 10 AI Startups in Dubai"), news articles, or aggregator sites rather than a company's own site.
+
+Task: extract distinct companies that plausibly match the target description, each with:
+- its proper name
+- its best-guess homepage URL (the company's own domain — not the listicle/news article URL that mentioned it, unless that IS the company's own site)
+- a one-sentence reason it matches the target description, grounded in the search result content
+
+Constraints:
+- Only include a company if you have reasonable confidence in both its name and an actual homepage domain for it (not a news site, not a directory site, not a social media profile). If a result only names a company without giving enough to infer its real domain, omit it rather than guessing a plausible-looking URL.
+- Deduplicate by company (the same company appearing in multiple search results should appear once).
+- Do not include the job applicant, generic industry terms, or non-company entities (universities, government bodies not operating as a company, etc.) unless the target description specifically asks for them.
+- Return at most 15 companies, ordered by how well they match the target description.
+- If the search results don't support any confident matches, return an empty list rather than inventing companies.
+
+Output strictly as JSON matching this shape, no prose outside the JSON:
+{
+  "companies": [
+    { "name": string, "url": string, "reason": string }
+  ]
+}`,
 } as const;
 
 export type PromptKey = keyof typeof PROMPTS;

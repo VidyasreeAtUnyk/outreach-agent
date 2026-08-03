@@ -83,6 +83,12 @@ export const CONTACT_SOURCE = {
   MANUAL: "manual",
 } as const;
 
+/** Whether a company row is a lightweight discovery stub or has been fully researched. See docs/decisions/07-company-discovery.md. */
+export const RESEARCH_STATUS = {
+  DISCOVERED: "discovered",
+  RESEARCHED: "researched",
+} as const;
+
 /** Rate limit applied to every AI-calling API route. See lib/ratelimit.ts. */
 export const RATE_LIMIT = {
   MAX_REQUESTS_PER_WINDOW: 10,
@@ -99,6 +105,9 @@ export const ROUTES = {
   HOME: "/",
   LOGIN: "/login",
   RESEARCH: "/research",
+  DISCOVER: "/discover",
+  COMPANIES: "/companies",
+  COMPANY_DETAIL: (id: string) => `/companies/${id}`,
   REVIEW: "/review",
   REVIEW_DETAIL: (id: string) => `/review/${id}`,
   TRACKER: "/tracker",

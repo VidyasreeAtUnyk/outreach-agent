@@ -1,8 +1,9 @@
 # Architecture
 
 OutreachAgent is a Next.js 14 App Router application. It has exactly one
-human user (Vidyasree) and exactly one job: turn a company URL into a
-reviewed, human-approved cold job-application email.
+human user (Vidyasree) and exactly one job: turn a company (found either
+by description or by URL) into a reviewed, human-approved cold
+job-application email.
 
 ## System overview
 
@@ -10,8 +11,21 @@ reviewed, human-approved cold job-application email.
                     ┌─────────────────────────────────────────────┐
                     │                Next.js app                  │
                     │                                              │
+  /discover  ──────▶│  POST /api/discover                          │
+  (describe target)  │    │                                        │
+                    │    ▼                                        │
+                    │  lib/agent/discover.ts                       │
+                    │    ├─▶ tavily.ts (1 search)                  │
+                    │    └─▶ openai.ts (1 call, extract candidates)│
+                    │    ▼                                        │
+                    │  supabase: companies (research_status=       │
+                    │            'discovered', name+url only)      │
+                    │                                              │
+  /companies ◀──────│  human browses discovered + researched       │
+  /companies/[id]    │  companies, picks which to research          │
+                    │    │                                        │
   /research  ──────▶│  POST /api/research                         │
-  (submit URL)       │    │                                        │
+  (submit/pick URL)  │    │                                        │
                     │    ▼                                        │
                     │  lib/agent/research.ts (orchestrator)        │
                     │    │                                        │
@@ -21,10 +35,9 @@ reviewed, human-approved cold job-application email.
                     │    └─▶ contact-lookup.ts (Apollo→Hunter)     │
                     │    │                                        │
                     │    ▼                                        │
-                    │  supabase: companies, contacts               │
-                    │    │                                        │
-                    │    ▼                                        │
-                    │  POST /api/draft                             │
+                    │  supabase: companies (upsert on user+url,    │
+                    │            research_status='researched'),    │
+                    │            contacts                          │
                     │    │                                        │
                     │    ├─▶ lib/agent/match.ts   (pick project,   │
                     │    │                          no OpenAI call)│
@@ -34,7 +47,9 @@ reviewed, human-approved cold job-application email.
                     │    └─▶ lib/agent/score.ts    (finalize score,│
                     │                               no OpenAI call)│
                     │    │                                        │
-                    │    ▼                                        │
+                    │    ▼ (if this half fails, e.g. budget        │
+                    │       exhausted, the company above is        │
+                    │       already saved — see below)             │
                     │  supabase: drafts (status='pending')         │
                     │                                              │
   /review    ◀──────│  human reviews, edits, approves/rejects      │
@@ -52,8 +67,10 @@ reviewed, human-approved cold job-application email.
 ```
 
 See [[decisions/01-human-in-the-loop]] for why the approve/send boundary
-exists and [[decisions/04-review-before-send]] for why sending itself stays
-manual in Phase 1.
+exists, [[decisions/04-review-before-send]] for why sending itself stays
+manual in Phase 1, and [[decisions/07-company-discovery]] for the
+discovery step and why a drafting failure never discards a successful
+research result.
 
 ## Layering rules
 
@@ -108,6 +125,11 @@ treats each step as best-effort:
 - The orchestrator only throws (failing the whole `POST /api/research` call)
   if the OpenAI synthesis step itself fails, since a company record with no
   synthesized understanding isn't useful to save.
+- Match/draft/score failing *after* research succeeds does not discard that
+  research: `POST /api/research` catches that failure separately and
+  returns the saved company/contact ids with `draftId: null` and a
+  `draftError` message instead of failing the whole request — see
+  [[decisions/07-company-discovery]].
 
 ## Data model
 
@@ -116,9 +138,13 @@ Four tables, all with RLS scoped to `auth.uid()` — see
 `supabase/migrations/001_initial.sql` for the authoritative schema (this
 section is a summary, not the source of truth):
 
-- **`companies`** — one row per researched company: identity fields (name,
-  url, industry, size, stage, location), AI-generated `description` and
-  `pain_point`, and array fields for `tech_signals` / `hiring_signals`.
+- **`companies`** — one row per company, either a `research_status='discovered'`
+  stub (name + url only, from `lib/agent/discover.ts`) or `'researched'`
+  (identity fields — name, url, industry, size, stage, location —
+  AI-generated `description` and `pain_point`, and array fields for
+  `tech_signals` / `hiring_signals`). Unique on `(user_id, url)`, so
+  researching a discovered stub upserts it in place — see
+  [[decisions/07-company-discovery]].
 - **`contacts`** — one row per person at a company (usually the CEO/CTO),
   linked by `company_id`, with `email_verified` reflecting whether Apollo,
   Hunter, or manual entry confirmed the address, and `found_via` recording
@@ -173,8 +199,8 @@ opaque blend.
 
 ## Rate limiting
 
-All AI-calling routes (`/api/research`, `/api/draft`, `/api/tracker/reply`)
-go through `lib/ratelimit.ts` — 10 requests per user per hour, enforced
+All AI-calling routes (`/api/discover`, `/api/research`, `/api/draft`,
+`/api/tracker/reply`) go through `lib/ratelimit.ts` — 10 requests per user per hour, enforced
 server-side before any external API is called. This exists primarily as a
 cost/runaway-loop guard for a single-user tool, not as an anti-abuse
 measure against outside traffic (the app is authenticated — see

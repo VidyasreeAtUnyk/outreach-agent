@@ -34,6 +34,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
+import { extractDomain } from "@/lib/utils";
 import { IntegrationError } from "@/lib/integrations/errors";
 import { createServiceClient } from "@/lib/supabase/service";
 import type { ContactLookupResult } from "@/lib/integrations/contact";
@@ -124,14 +125,6 @@ export async function getApolloUsage(
   const creditBudget = data?.credit_budget ?? 90;
 
   return { creditsUsed, creditBudget, remaining: Math.max(0, creditBudget - creditsUsed) };
-}
-
-function extractDomain(companyUrl: string): string {
-  try {
-    return new URL(companyUrl).hostname.replace(/^www\./, "");
-  } catch {
-    return companyUrl.replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0] ?? companyUrl;
-  }
 }
 
 /** Apollo returns a masked placeholder (e.g. "email_not_unlocked@domain.com") instead of throwing when the key's plan hasn't unlocked a real address — treat that the same as no email found. */

@@ -86,4 +86,32 @@ describe("POST /api/research", () => {
     expect(json.companyId).toBe("company-1");
     expect(draftEmailWithScoreMock).toHaveBeenCalledTimes(1);
   });
+
+  it("still returns 200 with the saved company/contact ids when drafting fails after research succeeds", async () => {
+    researchCompanyMock.mockResolvedValue({
+      company: { id: "company-1", industry: "proptech", painPoint: "x", description: "y", techSignals: [], hiringSignals: [] },
+      contact: { id: "contact-1", name: "Haider Ali Khan", title: "CEO" },
+      incompleteSteps: [],
+    });
+    matchCompanyToProjectMock.mockReturnValue({
+      projectId: "lead-follow-up-agent",
+      score: 8,
+      reasoning: "matches",
+      needsCustomisation: false,
+      customisationNotes: null,
+    });
+    draftEmailWithScoreMock.mockRejectedValue(
+      Object.assign(new Error("[openai] call budget exhausted (50/50 used)"), { code: "budget_exhausted" }),
+    );
+
+    const { POST } = await import("@/app/api/research/route");
+    const response = await POST(postRequest({ companyUrl: "https://www.bayut.com" }));
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.companyId).toBe("company-1");
+    expect(json.contactId).toBe("contact-1");
+    expect(json.draftId).toBeNull();
+    expect(json.draftError).toContain("budget exhausted");
+  });
 });

@@ -7,7 +7,7 @@ import { getApolloUsage } from "@/lib/integrations/apollo";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { DRAFT_STATUS, ROUTES } from "@/lib/constants";
+import { DRAFT_STATUS, RESEARCH_STATUS, ROUTES } from "@/lib/constants";
 
 const COLD_LEAD_THRESHOLD_DAYS = 3;
 /** Below this many remaining units, a usage card switches from informational to a warning/critical color. */
@@ -31,6 +31,9 @@ export default async function DashboardPage() {
   const drafts = (draftsResult.data ?? []).map(mapDraftRow);
   const repliesCount = repliesResult.count ?? 0;
 
+  const researchedCompanies = companies.filter((c) => c.researchStatus === RESEARCH_STATUS.RESEARCHED);
+  const discoveredCompanies = companies.filter((c) => c.researchStatus === RESEARCH_STATUS.DISCOVERED);
+
   const pendingDrafts = drafts.filter((d) => d.status === DRAFT_STATUS.PENDING);
   const sentDrafts = drafts.filter((d) => d.status === DRAFT_STATUS.SENT);
 
@@ -46,8 +49,9 @@ export default async function DashboardPage() {
       <div>
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-sm text-muted-foreground">
-          {companies.length} companies researched · {pendingDrafts.length} pending review ·{" "}
-          {sentDrafts.length} sent · {repliesCount} replies
+          {researchedCompanies.length} companies researched
+          {discoveredCompanies.length > 0 && ` (+${discoveredCompanies.length} discovered, not yet researched)`} ·{" "}
+          {pendingDrafts.length} pending review · {sentDrafts.length} sent · {repliesCount} replies
         </p>
       </div>
 
@@ -75,16 +79,23 @@ export default async function DashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard label="Researched" value={companies.length} />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+        <StatCard label="Researched" value={researchedCompanies.length} />
+        <StatCard label="Discovered" value={discoveredCompanies.length} />
         <StatCard label="Pending review" value={pendingDrafts.length} />
         <StatCard label="Sent" value={sentDrafts.length} />
         <StatCard label="Replies" value={repliesCount} />
       </div>
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <Button asChild>
-          <Link href={ROUTES.RESEARCH}>Research new company</Link>
+          <Link href={ROUTES.DISCOVER}>Discover companies</Link>
+        </Button>
+        <Button variant="outline" asChild>
+          <Link href={ROUTES.RESEARCH}>Research a company</Link>
+        </Button>
+        <Button variant="outline" asChild>
+          <Link href={ROUTES.COMPANIES}>Browse companies</Link>
         </Button>
         <Button variant="outline" asChild>
           <Link href={ROUTES.REVIEW}>Go to review queue</Link>

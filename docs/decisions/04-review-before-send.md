@@ -57,10 +57,14 @@ documentation standard:
 - **Automated email sending** (wire up the Resend stub for real). Blocked on
   deliverability setup (domain auth) and on manual sending actually proving
   to be a bottleneck.
-- **Automatic company discovery** (the agent finds companies itself instead
-  of Vidyasree submitting a URL via `/research`). Phase 2 — today's pipeline
-  is deliberately "human picks the target, AI does the research," not
-  "AI decides who to email."
+- ~~**Automatic company discovery**~~ — built in
+  [[07-company-discovery]], sooner than originally planned here. It
+  intentionally stops short of "AI decides who to email": discovery finds
+  and saves *candidates* from a description (`/discover`), but every
+  candidate still needs an explicit human "Research now" click before the
+  full pipeline (and its OpenAI cost) runs on it, and drafting/sending
+  still goes through the same human-in-the-loop review as any other
+  company — see [[01-human-in-the-loop]].
 - **Gmail webhook for reply detection** (auto-populate `replies` instead of
   pasting reply text into `/tracker`). Phase 3 — requires OAuth + webhook
   infrastructure that isn't justified for a handful of replies a week.

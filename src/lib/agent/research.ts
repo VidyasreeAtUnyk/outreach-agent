@@ -13,6 +13,12 @@
  * an otherwise-reachable company. Synthesis itself is the one step allowed
  * to throw, since a company record with no synthesized understanding isn't
  * useful to save.
+ *
+ * The company row is upserted on (user_id, url) rather than always
+ * inserted: if lib/agent/discover.ts already created a lightweight
+ * 'discovered' stub for this URL, researching it here updates that same
+ * row (promoting it to 'researched') instead of creating a duplicate — see
+ * docs/decisions/07-company-discovery.md.
  */
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -22,7 +28,7 @@ import { runJsonCompletion } from "@/lib/integrations/openai";
 import { findExecutiveContact, findEmailForNamedContact } from "@/lib/integrations/contact-lookup";
 import { PROMPTS } from "@/lib/prompts";
 import { logger } from "@/lib/logger";
-import { CONTACT_SOURCE, INDUSTRY, COMPANY_SIZE, COMPANY_STAGE } from "@/lib/constants";
+import { CONTACT_SOURCE, INDUSTRY, COMPANY_SIZE, COMPANY_STAGE, RESEARCH_STATUS } from "@/lib/constants";
 import { mapCompanyRow, mapContactRow } from "@/lib/supabase/mappers";
 import type { Company, Contact } from "@/types";
 
@@ -101,19 +107,23 @@ export async function researchCompany(params: ResearchCompanyParams): Promise<Re
 
   const { data: companyRow, error: companyError } = await supabase
     .from("companies")
-    .insert({
-      user_id: userId,
-      name: synthesis.companyName,
-      url: companyUrl,
-      industry: synthesis.industry,
-      size: synthesis.size,
-      stage: synthesis.stage,
-      description: synthesis.description,
-      pain_point: synthesis.painPoint,
-      tech_signals: synthesis.techSignals,
-      hiring_signals: synthesis.hiringSignals,
-      recent_news: synthesis.recentNews,
-    })
+    .upsert(
+      {
+        user_id: userId,
+        name: synthesis.companyName,
+        url: companyUrl,
+        industry: synthesis.industry,
+        size: synthesis.size,
+        stage: synthesis.stage,
+        description: synthesis.description,
+        pain_point: synthesis.painPoint,
+        tech_signals: synthesis.techSignals,
+        hiring_signals: synthesis.hiringSignals,
+        recent_news: synthesis.recentNews,
+        research_status: RESEARCH_STATUS.RESEARCHED,
+      },
+      { onConflict: "user_id,url" },
+    )
     .select()
     .single();
 

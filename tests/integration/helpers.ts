@@ -19,7 +19,7 @@ export function createMockSupabase(queue: QueuedResponse[]) {
   const next = (): QueuedResponse => queue[index++] ?? { data: null, error: null };
 
   const builder: Record<string, unknown> = {};
-  const chainable = ["select", "insert", "update", "eq", "in", "order", "limit"];
+  const chainable = ["select", "insert", "upsert", "update", "eq", "in", "order", "limit"];
   for (const method of chainable) {
     builder[method] = vi.fn(() => builder);
   }

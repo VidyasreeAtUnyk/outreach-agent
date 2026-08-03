@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
+import { extractDomain } from "@/lib/utils";
 import { IntegrationError } from "@/lib/integrations/errors";
 import type { ContactLookupResult } from "@/lib/integrations/contact";
 
@@ -52,14 +53,6 @@ const emailFinderResponseSchema = z.object({
     linkedin_url: z.string().nullable().optional(),
   }),
 });
-
-function extractDomain(companyUrl: string): string {
-  try {
-    return new URL(companyUrl).hostname.replace(/^www\./, "");
-  } catch {
-    return companyUrl.replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0] ?? companyUrl;
-  }
-}
 
 function isExecutivePosition(position: string | null | undefined, seniority: string | null | undefined): boolean {
   const haystack = `${position ?? ""} ${seniority ?? ""}`.toLowerCase();

@@ -13,7 +13,9 @@ import { ROUTES } from "@/lib/constants";
 
 const NAV_LINKS = [
   { href: ROUTES.HOME, label: "Dashboard" },
+  { href: ROUTES.DISCOVER, label: "Discover" },
   { href: ROUTES.RESEARCH, label: "Research" },
+  { href: ROUTES.COMPANIES, label: "Companies" },
   { href: ROUTES.REVIEW, label: "Review" },
   { href: ROUTES.TRACKER, label: "Tracker" },
 ] as const;

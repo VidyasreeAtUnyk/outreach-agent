@@ -10,6 +10,7 @@ import type {
   DRAFT_STATUS,
   INDUSTRY,
   REPLY_STATUS,
+  RESEARCH_STATUS,
   SCORE_RECOMMENDATION,
   SENTIMENT,
 } from "@/lib/constants";
@@ -20,6 +21,7 @@ export type Industry = (typeof INDUSTRY)[keyof typeof INDUSTRY];
 export type ContactSource = (typeof CONTACT_SOURCE)[keyof typeof CONTACT_SOURCE];
 export type DraftStatus = (typeof DRAFT_STATUS)[keyof typeof DRAFT_STATUS];
 export type ReplyStatus = (typeof REPLY_STATUS)[keyof typeof REPLY_STATUS];
+export type ResearchStatus = (typeof RESEARCH_STATUS)[keyof typeof RESEARCH_STATUS];
 export type Sentiment = (typeof SENTIMENT)[keyof typeof SENTIMENT];
 export type ScoreRecommendation =
   (typeof SCORE_RECOMMENDATION)[keyof typeof SCORE_RECOMMENDATION];
@@ -39,6 +41,8 @@ export interface Company {
   techSignals: string[];
   hiringSignals: string[];
   recentNews: string | null;
+  /** 'discovered' = found via lib/agent/discover.ts, not yet researched (most fields null). 'researched' = full pipeline has run. */
+  researchStatus: ResearchStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,4 +142,21 @@ export interface ScoreResult {
   score: number;
   reasoning: string;
   recommendation: ScoreRecommendation;
+}
+
+/** One candidate found by lib/agent/discover.ts, persisted as a 'discovered' companies row. */
+export interface DiscoveredCompany {
+  id: string;
+  name: string;
+  url: string;
+  /** Why this candidate matched the discovery query, from the model's extraction. */
+  reason: string;
+  /** True if this candidate matched an existing company row rather than being newly inserted. */
+  alreadyKnown: boolean;
+}
+
+/** Output of lib/agent/discover.ts. */
+export interface DiscoverCompaniesOutput {
+  discovered: DiscoveredCompany[];
+  incompleteSteps: string[];
 }
