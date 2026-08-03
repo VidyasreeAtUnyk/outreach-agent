@@ -5,11 +5,17 @@
  * tight rather than permissive-by-default.
  */
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const isDev = process.env.NODE_ENV !== "production";
 
 const contentSecurityPolicy = [
   "default-src 'self'",
   // Next.js needs 'unsafe-inline' for its own injected runtime scripts/styles.
-  "script-src 'self' 'unsafe-inline'",
+  // Dev-mode bundles also run through eval(), which 'unsafe-eval' must allow
+  // here or the browser silently blocks all client JS from executing (no
+  // hydration, no event handlers, no console error explaining why) — this
+  // is a dev-server requirement, not a production one, so it's dropped from
+  // the production CSP.
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",

@@ -49,6 +49,13 @@ export function LoginForm() {
         }
         setConfirmationSent(true);
       }
+    } catch {
+      // A network-level failure (bad Supabase URL, offline, blocked
+      // request) throws instead of returning {error} — without this, the
+      // form would fail silently with no feedback at all.
+      setError(
+        "Could not reach Supabase. Check NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_ANON_KEY in your .env.local and that the dev server was restarted after setting them.",
+      );
     } finally {
       setIsSubmitting(false);
     }
