@@ -406,3 +406,52 @@ upsert, not a cross-table migration.
 `tests/integration/research.route.test.ts`, and fixed the fake Supabase
 client in `tests/unit/research.test.ts` to support `.upsert()`), `next build`
 (clean, 20 routes).
+
+## Phase 16 — Fix dev-mode CSP breaking all client JS, and ambiguous-column bug in the budget functions
+
+**Bug found (reported: "sign up link doesn't work"):** `next.config.mjs`'s
+CSP had `script-src 'self' 'unsafe-inline'` with no `'unsafe-eval'`. Next.js
+dev-mode bundles run through `eval()` for fast rebuilds; without
+`'unsafe-eval'` the browser silently blocked all application JS from
+executing — scripts loaded (200 OK) but never ran, so nothing hydrated:
+no click handlers, no form interception, no console error explaining why.
+Confirmed by checking for `__reactFiber*`/`__reactProps*` own-properties on
+a button DOM node (none found — React had never attached) and by curling
+the actual response headers to see the deployed policy. **Fix:** allow
+`'unsafe-eval'` only when `NODE_ENV !== 'production'`; production is
+unaffected since prod builds don't use `eval()`. Also added a missing
+`catch` block to `LoginForm.tsx`'s submit handler — a network-level auth
+failure (bad Supabase URL, offline) was throwing uncaught instead of
+setting a visible error.
+
+**Bug found (reported: Postgres errors on `/discover` — "column reference
+\"period\"/\"calls_used\" is ambiguous"):** all three
+`increment_{openai,tavily,apollo}_usage()` functions (002-004) declare
+`returns table (calls_used integer, ...)` (or `credits_used`/
+`credit_budget`/`period`) — those OUT parameter names are identical to the
+columns on the table each function updates. Inside the function body,
+unqualified references to e.g. `calls_used` are ambiguous between "the OUT
+parameter" and "the column," and Postgres correctly refuses to guess
+rather than pick one silently. **Fix:** qualify every such reference with
+the table name (`openai_usage.calls_used`, etc.) inside the `UPDATE`'s
+`SET`/`WHERE` clauses — the only place the ambiguity actually occurred (the
+`RETURNING *` and the OUT-column `SELECT`s were already fine). Fixed both
+at the source in 002-004 (so a fresh setup never hits it) and added
+`006_fix_ambiguous_budget_columns.sql` (`CREATE OR REPLACE FUNCTION`, safe
+to re-run) for any database that already applied the broken versions —
+migrations already applied can't be un-applied, and editing 002-004 alone
+wouldn't reach a database that ran them before the fix.
+
+**Lesson:** don't name a PL/pgSQL function's `RETURNS TABLE` output columns
+identically to the columns of the table it operates on unless every
+reference inside the function body is qualified — safer to qualify
+defensively from the start than to rely on remembering this each time.
+
+**Verification performed:** could not run the corrected SQL against a live
+Postgres instance (no `psql`/Docker/Supabase CLI available in this
+environment, and no direct DB connection string — only the REST-facing
+Supabase keys). Verified by careful manual review of every reference in
+each function body instead; the user needs to apply
+`006_fix_ambiguous_budget_columns.sql` via the Supabase SQL editor and
+confirm `/discover` works end-to-end. `tsc --noEmit`, `eslint` unaffected
+(SQL-only + two small TS files already covered above).

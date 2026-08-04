@@ -118,7 +118,12 @@ into the Supabase SQL editor. `001_initial.sql` creates `companies`,
 usage-tracking tables described in
 [decisions/05-external-api-budgets.md](decisions/05-external-api-budgets.md);
 `005_company_discovery.sql` adds discovery support described in
-[decisions/07-company-discovery.md](decisions/07-company-discovery.md).
+[decisions/07-company-discovery.md](decisions/07-company-discovery.md);
+`006_fix_ambiguous_budget_columns.sql` fixes a bug in the three
+`increment_*_usage` functions (002-004) where their own OUT parameter
+names collided with the table's column names, making Postgres reject
+every call with "column reference ... is ambiguous" — **required** if you
+applied 002-004 before this fix landed, harmless to re-run if you didn't.
 
 ### 4. (Optional) Seed sample data
 

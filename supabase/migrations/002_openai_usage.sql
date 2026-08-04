@@ -37,9 +37,14 @@ as $$
 declare
   updated_row openai_usage%rowtype;
 begin
+  -- Column references below are qualified with the table name because
+  -- this function's own OUT parameters (calls_used, call_budget) share
+  -- names with these columns — unqualified references are ambiguous
+  -- between "the OUT parameter" and "the column" and Postgres will refuse
+  -- to guess (see 006_fix_ambiguous_budget_columns.sql).
   update openai_usage
-  set calls_used = calls_used + 1, updated_at = now()
-  where id = 'global' and calls_used < call_budget
+  set calls_used = openai_usage.calls_used + 1, updated_at = now()
+  where openai_usage.id = 'global' and openai_usage.calls_used < openai_usage.call_budget
   returning * into updated_row;
 
   if found then
@@ -48,7 +53,7 @@ begin
     return query
       select openai_usage.calls_used, openai_usage.call_budget, false
       from openai_usage
-      where id = 'global';
+      where openai_usage.id = 'global';
   end if;
 end;
 $$;

@@ -37,9 +37,14 @@ begin
   insert into tavily_usage (period) values (current_period)
   on conflict (period) do nothing;
 
+  -- Column references below are qualified with the table name because
+  -- this function's own OUT parameters (credits_used, credit_budget,
+  -- period) share names with these columns — see
+  -- 006_fix_ambiguous_budget_columns.sql.
   update tavily_usage
-  set credits_used = credits_used + 1, updated_at = now()
-  where tavily_usage.period = current_period and credits_used < credit_budget
+  set credits_used = tavily_usage.credits_used + 1, updated_at = now()
+  where tavily_usage.period = current_period
+    and tavily_usage.credits_used < tavily_usage.credit_budget
   returning * into updated_row;
 
   if found then
