@@ -455,3 +455,98 @@ each function body instead; the user needs to apply
 `006_fix_ambiguous_budget_columns.sql` via the Supabase SQL editor and
 confirm `/discover` works end-to-end. `tsc --noEmit`, `eslint` unaffected
 (SQL-only + two small TS files already covered above).
+
+**Bug found (006 didn't actually fix Tavily/Apollo — same error persisted
+after applying it):** manual SQL review missed that
+`increment_tavily_usage`/`increment_apollo_usage` each contain
+`insert into ..._usage (period) values (...) on conflict (period) do
+nothing`, and an `ON CONFLICT` conflict-target list is a bare column-name
+list — it cannot be table-qualified the way a `WHERE`/`SET` clause can
+(`on conflict (tavily_usage.period)` isn't valid syntax). As long as the
+function also declared a `period` OUT parameter, that bare `period` in
+the conflict target stayed genuinely unqualifiable and ambiguous.
+`increment_openai_usage` has no `INSERT`/`ON CONFLICT` at all, which is
+why 006 fixed it correctly but silently failed to fix the other two.
+**Fix:** dropped `period` from both functions' `RETURNS TABLE` — neither
+`getTavilyUsage` nor `getApolloUsage` ever read it from the RPC result
+(both query the table directly instead — confirmed by grepping for every
+`period` reference in `tavily.ts`/`apollo.ts` before touching anything),
+so removing the OUT parameter removes the colliding variable instead of
+trying to route around a reference that structurally can't be qualified.
+Fixed at the source in 003-004 and added
+`007_fix_on_conflict_ambiguous_column.sql` for databases (including the
+user's) that already ran 002-006.
+
+**Lesson, updated:** qualifying every reference isn't sufficient by
+itself — some SQL clauses (`ON CONFLICT` targets, `INSERT` column lists)
+don't accept qualification at all. The robust fix for this bug class is
+avoiding the name collision entirely (don't give a function's `RETURNS
+TABLE` output the same name as a table column it operates on, especially
+one used in an `INSERT`/`ON CONFLICT`), not qualifying references after
+the fact — qualification is a workaround for the syntactic positions that
+allow it, not a general fix.
+
+**Separately reported in the same session, not a bug:** the user's OpenAI
+account hit real account-level rate limits (10 requests/min, 100K
+tokens/min on `gpt-5.4-mini`) while researching several companies in
+quick succession — unrelated to this app's internal 50-call budget
+tracker, which is a lifetime cap, not a per-minute one. Confirmed the
+existing design already handles this correctly: `runJsonCompletion`'s
+first `catch` block (network/request-level failure, which is what the
+OpenAI SDK throws for on a 429) calls `releaseCall()`, so these
+rate-limited attempts did not consume the user's internal 50-call budget.
+Requests that failed during `RESEARCH_SYNTHESIS` correctly 500'd (nothing
+to save); requests that failed during `email-draft-and-score` after
+synthesis had already succeeded correctly returned 200 with `draftId:
+null` per the Phase 15 resilience fix — real-world confirmation that both
+behaviors work as designed under actual rate-limit pressure, not just in
+tests.
+
+**Bug found (running 007 as first written):** `ERROR: 42P13: cannot
+change return type of existing function ... Use DROP FUNCTION
+increment_tavily_usage() first.` `CREATE OR REPLACE FUNCTION` can only
+replace a function whose row type (defined by its OUT parameters) is
+unchanged — dropping the `period` output column changes that row type,
+which `CREATE OR REPLACE` explicitly refuses to do (this restriction
+exists because other database objects, like views, could depend on the
+old return shape). **Fix:** `007_fix_on_conflict_ambiguous_column.sql`
+now runs `drop function if exists increment_tavily_usage();` /
+`increment_apollo_usage();` before each `CREATE FUNCTION`. No issue for
+003/004's fresh-install versions of these functions — those run against
+a database where the function doesn't exist yet, so there's no prior
+return type to conflict with; this only bites a migration that's
+*replacing* an already-differently-shaped function, which is exactly
+007's situation on a database that already ran 002-006.
+
+## Phase 17 — Distinguish OpenAI's own rate limit from our internal budget
+
+**Reported:** `POST /api/draft` returned a generic 500 "Internal server
+error" after a real OpenAI 429 (account-level rate limit — 100K TPM used,
+retry in 12+ hours). The actual, useful error message (with the concrete
+retry duration) was logged server-side but never reached the UI —
+`toErrorResponse` only special-cased our own `budget_exhausted` code;
+any other `IntegrationError`, including a genuine upstream rate limit,
+fell through to the generic 500 branch.
+
+**Built:** `IntegrationErrorCode` gained a `'rate_limited'` value.
+`runJsonCompletion`'s request-failure catch block now checks
+`cause instanceof OpenAI.APIError && cause.status === 429` and, if so,
+throws with `code: 'rate_limited'` and a message that includes OpenAI's
+own error text (which already states when to retry) instead of the
+generic "completion request failed for {label}". `api-utils.ts`'s
+`toErrorResponse` now maps both `budget_exhausted` and `rate_limited` to
+a 429 with the real message.
+
+**Decision:** kept `rate_limited` as a distinct code from
+`budget_exhausted` rather than merging them — they're different failure
+modes with different remedies (our budget resets on a schedule we
+control and display on the dashboard; OpenAI's account-level rate limit
+is external, and the fix is either waiting it out or adding a payment
+method on their end) — collapsing them into one message would have lost
+that distinction for the user reading the error.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (61/61 passing — added a rate-limit-detection test to
+`tests/unit/openai-budget.test.ts`, which required extending its mocked
+`openai` module with a `MockAPIError` class carrying a `.status` property
+so `instanceof OpenAI.APIError` resolves correctly inside the mock).

@@ -64,7 +64,10 @@ export function toErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: error.status });
   }
 
-  if (error instanceof IntegrationError && error.code === "budget_exhausted") {
+  if (
+    error instanceof IntegrationError &&
+    (error.code === "budget_exhausted" || error.code === "rate_limited")
+  ) {
     return NextResponse.json({ error: error.message }, { status: 429 });
   }
 

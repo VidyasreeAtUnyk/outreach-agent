@@ -26,8 +26,15 @@ create policy "tavily_usage_select_authenticated" on tavily_usage
 -- the same as any other Tavily failure and skip the search (see
 -- lib/integrations/tavily.ts, which already treats search failures as
 -- best-effort, not fatal).
+-- No `period` in the OUT signature (lib/integrations/tavily.ts never reads
+-- it — getTavilyUsage queries the table directly instead). That's not just
+-- unused-field cleanup: an `on conflict (period)` target list can't be
+-- table-qualified the way WHERE/SET can, so a `period` OUT parameter/
+-- variable would still collide with the table's `period` column even
+-- after qualifying every other reference — see
+-- 007_fix_on_conflict_ambiguous_column.sql for the incident this avoids.
 create or replace function increment_tavily_usage()
-returns table (credits_used integer, credit_budget integer, allowed boolean, period text)
+returns table (credits_used integer, credit_budget integer, allowed boolean)
 language plpgsql
 as $$
 declare
@@ -38,8 +45,8 @@ begin
   on conflict (period) do nothing;
 
   -- Column references below are qualified with the table name because
-  -- this function's own OUT parameters (credits_used, credit_budget,
-  -- period) share names with these columns — see
+  -- this function's own OUT parameters (credits_used, credit_budget)
+  -- share names with these columns — see
   -- 006_fix_ambiguous_budget_columns.sql.
   update tavily_usage
   set credits_used = tavily_usage.credits_used + 1, updated_at = now()
@@ -48,10 +55,10 @@ begin
   returning * into updated_row;
 
   if found then
-    return query select updated_row.credits_used, updated_row.credit_budget, true, updated_row.period;
+    return query select updated_row.credits_used, updated_row.credit_budget, true;
   else
     return query
-      select tavily_usage.credits_used, tavily_usage.credit_budget, false, tavily_usage.period
+      select tavily_usage.credits_used, tavily_usage.credit_budget, false
       from tavily_usage
       where tavily_usage.period = current_period;
   end if;

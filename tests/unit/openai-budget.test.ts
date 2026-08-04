@@ -1,10 +1,28 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { z } from "zod";
 
-const { createMock, rpcMock } = vi.hoisted(() => ({
-  createMock: vi.fn(),
-  rpcMock: vi.fn(),
-}));
+const { createMock, rpcMock, MockAPIError, MockOpenAI } = vi.hoisted(() => {
+  class HoistedMockAPIError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+
+  const hoistedCreateMock = vi.fn();
+  const hoistedMockOpenAi = vi.fn().mockImplementation(() => ({
+    chat: { completions: { create: hoistedCreateMock } },
+  })) as unknown as { APIError: typeof HoistedMockAPIError } & (() => unknown);
+  hoistedMockOpenAi.APIError = HoistedMockAPIError;
+
+  return {
+    createMock: hoistedCreateMock,
+    rpcMock: vi.fn(),
+    MockAPIError: HoistedMockAPIError,
+    MockOpenAI: hoistedMockOpenAi,
+  };
+});
 
 /** Supabase's real .rpc() result is both awaitable directly and chainable with .single() — this fake supports both call shapes used in lib/integrations/openai.ts. */
 function makeRpcResult(result: { data: unknown; error: unknown }) {
@@ -16,9 +34,7 @@ function makeRpcResult(result: { data: unknown; error: unknown }) {
 }
 
 vi.mock("openai", () => ({
-  default: vi.fn().mockImplementation(() => ({
-    chat: { completions: { create: createMock } },
-  })),
+  default: MockOpenAI,
 }));
 
 vi.mock("@/lib/supabase/service", () => ({
@@ -67,6 +83,18 @@ describe("runJsonCompletion — OpenAI call budget", () => {
     await expect(
       runJsonCompletion({ systemPrompt: "sys", userContent: "user", schema, label: "test" }),
     ).rejects.toThrow();
+    expect(rpcMock).toHaveBeenCalledWith("decrement_openai_usage");
+  });
+
+  it("tags a 429 from OpenAI itself as rate_limited (distinct from our internal budget_exhausted) and releases the reservation", async () => {
+    rpcMock.mockReturnValue(makeRpcResult({ data: { calls_used: 5, call_budget: 50, allowed: true }, error: null }));
+    createMock.mockRejectedValue(new MockAPIError(429, "Rate limit reached for gpt-5.4-mini on tokens per min"));
+
+    const { runJsonCompletion } = await import("@/lib/integrations/openai");
+
+    await expect(
+      runJsonCompletion({ systemPrompt: "sys", userContent: "user", schema, label: "test" }),
+    ).rejects.toMatchObject({ code: "rate_limited", message: expect.stringContaining("Rate limit reached") });
     expect(rpcMock).toHaveBeenCalledWith("decrement_openai_usage");
   });
 

@@ -122,8 +122,13 @@ usage-tracking tables described in
 `006_fix_ambiguous_budget_columns.sql` fixes a bug in the three
 `increment_*_usage` functions (002-004) where their own OUT parameter
 names collided with the table's column names, making Postgres reject
-every call with "column reference ... is ambiguous" — **required** if you
-applied 002-004 before this fix landed, harmless to re-run if you didn't.
+every call with "column reference ... is ambiguous"; `007_fix_on_conflict_ambiguous_column.sql`
+fixes a second instance of the same root cause that 006 couldn't reach —
+an `ON CONFLICT (period)` target list can't be table-qualified, so
+`increment_tavily_usage`/`increment_apollo_usage` needed their unused
+`period` output column dropped instead. **Both are required** if you
+applied 002-004 before these fixes landed, harmless to re-run if you
+didn't.
 
 ### 4. (Optional) Seed sample data
 

@@ -100,7 +100,7 @@ interface RunJsonCompletionParams<T> {
  * request and refuses to proceed once exhausted.
  * @param params - system prompt, user content, output schema, and a log label
  * @returns the parsed and validated response, typed as T
- * @throws IntegrationError (code 'budget_exhausted' if the call budget is used up) if the budget check fails, the request fails, returns empty content, isn't valid JSON, or fails schema validation
+ * @throws IntegrationError (code 'budget_exhausted' if our internal call budget is used up, 'rate_limited' if OpenAI's own account-level rate limit was hit) if the budget check fails, the request fails, returns empty content, isn't valid JSON, or fails schema validation
  */
 export async function runJsonCompletion<T>(params: RunJsonCompletionParams<T>): Promise<T> {
   const { systemPrompt, userContent, schema, label } = params;
@@ -134,6 +134,18 @@ export async function runJsonCompletion<T>(params: RunJsonCompletionParams<T>): 
   } catch (cause) {
     logger.error("openai completion request failed", { label, cause: String(cause) });
     await releaseCall();
+
+    // Distinguish OpenAI's own account-level rate limit (a transient,
+    // externally-imposed condition distinct from our internal
+    // budget_exhausted check above) so api-utils.ts can surface the
+    // upstream message — which already includes a concrete retry-after
+    // duration — instead of a generic 500.
+    if (cause instanceof OpenAI.APIError && cause.status === 429) {
+      throw new IntegrationError("openai", `rate limited for ${label}: ${cause.message}`, {
+        cause,
+        code: "rate_limited",
+      });
+    }
     throw new IntegrationError("openai", `completion request failed for ${label}`, { cause });
   }
 

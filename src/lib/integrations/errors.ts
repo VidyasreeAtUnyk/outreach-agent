@@ -8,8 +8,8 @@
 
 export type IntegrationServiceName = "openai" | "tavily" | "hunter" | "apollo" | "resend";
 
-/** Machine-checkable reason, for callers that need to branch on the failure (e.g. api-utils.ts mapping budget exhaustion to a 429). */
-export type IntegrationErrorCode = "budget_exhausted";
+/** Machine-checkable reason, for callers that need to branch on the failure (e.g. api-utils.ts mapping budget exhaustion or an upstream rate limit to a 429). */
+export type IntegrationErrorCode = "budget_exhausted" | "rate_limited";
 
 export class IntegrationError extends Error {
   readonly service: IntegrationServiceName;

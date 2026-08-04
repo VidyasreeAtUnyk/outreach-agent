@@ -31,8 +31,15 @@ create policy "apollo_usage_select_authenticated" on apollo_usage
 -- the same as any other Apollo failure and skip the lookup (see
 -- lib/integrations/apollo.ts, which already treats failures as best-effort,
 -- not fatal — contact-lookup.ts falls back to Hunter regardless).
+-- No `period` in the OUT signature (lib/integrations/apollo.ts never reads
+-- it — getApolloUsage queries the table directly instead). That's not just
+-- unused-field cleanup: an `on conflict (period)` target list can't be
+-- table-qualified the way WHERE/SET can, so a `period` OUT parameter/
+-- variable would still collide with the table's `period` column even
+-- after qualifying every other reference — see
+-- 007_fix_on_conflict_ambiguous_column.sql for the incident this avoids.
 create or replace function increment_apollo_usage()
-returns table (credits_used integer, credit_budget integer, allowed boolean, period text)
+returns table (credits_used integer, credit_budget integer, allowed boolean)
 language plpgsql
 as $$
 declare
@@ -43,8 +50,8 @@ begin
   on conflict (period) do nothing;
 
   -- Column references below are qualified with the table name because
-  -- this function's own OUT parameters (credits_used, credit_budget,
-  -- period) share names with these columns — see
+  -- this function's own OUT parameters (credits_used, credit_budget)
+  -- share names with these columns — see
   -- 006_fix_ambiguous_budget_columns.sql.
   update apollo_usage
   set credits_used = apollo_usage.credits_used + 1, updated_at = now()
@@ -53,10 +60,10 @@ begin
   returning * into updated_row;
 
   if found then
-    return query select updated_row.credits_used, updated_row.credit_budget, true, updated_row.period;
+    return query select updated_row.credits_used, updated_row.credit_budget, true;
   else
     return query
-      select apollo_usage.credits_used, apollo_usage.credit_budget, false, apollo_usage.period
+      select apollo_usage.credits_used, apollo_usage.credit_budget, false
       from apollo_usage
       where apollo_usage.period = current_period;
   end if;
