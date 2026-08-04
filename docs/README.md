@@ -10,9 +10,18 @@ sends it. It does not send anything automatically — see
 
 1. **(Optional) You describe what you're looking for** on `/discover` —
    e.g. "AI agent companies with UAE presence" — and it searches the web
-   and saves a list of candidate companies (name + URL) for you to review.
-   This step is cheap: one search and one AI call no matter how many
-   candidates it finds. Nothing gets fully researched automatically.
+   and saves a ranked list of candidate companies (name + URL + a 1-10
+   relevance score) for you to review. This step is cheap: one search and
+   one AI call no matter how many candidates it finds. Nothing gets fully
+   researched automatically.
+   - From there you can either process candidates one at a time, or click
+     **"Process all"** to automatically research, score, and draft every
+     candidate in relevance order — best matches first, so if an OpenAI
+     rate limit or budget runs out mid-run, the strongest leads are
+     already done. Companies that score too low to be worth an email get
+     skipped (no draft spent on them); anything that fails along the way
+     is marked and the run moves on to the next company instead of
+     stopping. Progress updates live as it runs.
 2. **You give it a company URL** — either by picking a discovered
    candidate on `/companies` or pasting one yourself on `/research`
    (optionally a contact name and title, and the role you're applying
@@ -68,6 +77,11 @@ rejected → Consequences:
 - [07-company-discovery.md](decisions/07-company-discovery.md) — why
   discovery costs one AI call per search run (not per candidate found),
   and why a drafting failure never discards a successful research result.
+- [09-automated-batch-runs.md](decisions/09-automated-batch-runs.md) — why
+  batch runs score before drafting (costs more per successful draft, but
+  never drafts a company you'd reject), why the loop lives in the browser
+  instead of a background job, and why errors mark-and-continue instead
+  of stopping the run.
 
 [architecture.md](architecture.md) has the full system diagram, layering
 rules, data model, and matching/scoring logic. [prompts.md](prompts.md) is
@@ -128,7 +142,9 @@ an `ON CONFLICT (period)` target list can't be table-qualified, so
 `increment_tavily_usage`/`increment_apollo_usage` needed their unused
 `period` output column dropped instead. **Both are required** if you
 applied 002-004 before these fixes landed, harmless to re-run if you
-didn't.
+didn't. `008_discovery_score.sql` adds the persisted relevance score
+described in
+[decisions/09-automated-batch-runs.md](decisions/09-automated-batch-runs.md).
 
 ### 4. (Optional) Seed sample data
 

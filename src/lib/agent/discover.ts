@@ -1,15 +1,17 @@
 /**
  * Finds candidate companies matching a natural-language description (e.g.
  * "AI agent companies with UAE presence") and persists each as a
- * lightweight 'discovered' companies row — name and URL only, everything
- * else null — for the human to review and selectively send through the
- * full research pipeline (lib/agent/research.ts).
+ * lightweight 'discovered' companies row — name, URL, and a relevance
+ * score, everything else null — for the human to review and selectively
+ * send through the full research pipeline (lib/agent/research.ts), or to
+ * feed into an automated batch run that processes candidates in score
+ * order (see lib/agent/batch.ts).
  *
  * Deliberately does NOT research every candidate automatically: one
  * discovery run costs one Tavily search plus exactly one OpenAI call (to
- * extract clean company names/URLs from the noisy search results), no
- * matter how many candidates it finds. Fully researching a candidate is a
- * separate, explicit action the human takes per-company, which is what
+ * extract clean company names/URLs *and* a relevance score from the noisy
+ * search results), no matter how many candidates it finds. Fully
+ * researching a candidate is a separate, explicit action, which is what
  * actually spends OpenAI budget — see docs/decisions/07-company-discovery.md
  * for why this split matters against a 50-call lifetime OpenAI cap.
  */
@@ -29,6 +31,7 @@ const discoveryResponseSchema = z.object({
       name: z.string().min(1),
       url: z.string().min(1),
       reason: z.string().min(1),
+      relevanceScore: z.number(),
     }),
   ),
 });
@@ -40,10 +43,14 @@ export interface DiscoverCompaniesParams {
   supabase: SupabaseClient;
 }
 
+function clampScore(score: number): number {
+  return Math.min(10, Math.max(1, Math.round(score)));
+}
+
 /**
- * Searches for and persists candidate companies matching a description.
+ * Searches for and persists candidate companies matching a description, sorted by relevance score descending.
  * @param params - the discovery query and the authenticated Supabase client/user to save under
- * @returns the discovered (or already-known) candidates, plus which steps were skipped due to upstream failures
+ * @returns the discovered (or already-known) candidates in priority order, plus which steps were skipped due to upstream failures
  */
 export async function discoverCompanies(params: DiscoverCompaniesParams): Promise<DiscoverCompaniesOutput> {
   const { query, userId, supabase } = params;
@@ -70,6 +77,8 @@ export async function discoverCompanies(params: DiscoverCompaniesParams): Promis
     return { discovered: [], incompleteSteps };
   }
 
+  const sortedCandidates = [...extraction.companies].sort((a, b) => b.relevanceScore - a.relevanceScore);
+
   const { data: existingRows, error: existingError } = await supabase
     .from("companies")
     .select("id, name, url")
@@ -87,12 +96,20 @@ export async function discoverCompanies(params: DiscoverCompaniesParams): Promis
 
   const discovered: DiscoveredCompany[] = [];
 
-  for (const candidate of extraction.companies) {
+  for (const candidate of sortedCandidates) {
     const domain = extractDomain(candidate.url);
     const existing = existingByDomain.get(domain);
+    const score = clampScore(candidate.relevanceScore);
 
     if (existing) {
-      discovered.push({ id: existing.id, name: existing.name, url: existing.url, reason: candidate.reason, alreadyKnown: true });
+      discovered.push({
+        id: existing.id,
+        name: existing.name,
+        url: existing.url,
+        reason: candidate.reason,
+        score,
+        alreadyKnown: true,
+      });
       continue;
     }
 
@@ -103,6 +120,7 @@ export async function discoverCompanies(params: DiscoverCompaniesParams): Promis
         name: candidate.name,
         url: candidate.url,
         research_status: RESEARCH_STATUS.DISCOVERED,
+        discovery_score: score,
       })
       .select("id, name, url")
       .single();
@@ -115,7 +133,7 @@ export async function discoverCompanies(params: DiscoverCompaniesParams): Promis
       continue;
     }
 
-    discovered.push({ id: row.id, name: row.name, url: row.url, reason: candidate.reason, alreadyKnown: false });
+    discovered.push({ id: row.id, name: row.name, url: row.url, reason: candidate.reason, score, alreadyKnown: false });
     existingByDomain.set(domain, row);
   }
 

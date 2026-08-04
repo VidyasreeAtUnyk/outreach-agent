@@ -1,12 +1,24 @@
 /**
- * Drafts the cold job-application email for a researched company AND scores
- * the overall application in the same OpenAI call — see lib/prompts.ts
- * EMAIL_DRAFT_AND_SCORE. Combined deliberately to spend one call instead of
- * two against the hard OpenAI call budget (see
- * docs/decisions/05-openai-call-budget.md). The raw score/reasoning this
- * returns still needs to go through lib/agent/score.ts's
- * `deriveScoreResult` to get the final clamped score and deterministic
- * send/review/skip recommendation.
+ * Two ways to draft the cold job-application email, for two different
+ * callers:
+ *
+ * - `draftEmailWithScore` — one OpenAI call that writes the email AND
+ *   scores the application together (`PROMPTS.EMAIL_DRAFT_AND_SCORE`).
+ *   Used by the manual, one-company-at-a-time review flow, where the
+ *   human sees both together and decides for themselves — this is the
+ *   cheaper default (see docs/decisions/05-openai-call-budget.md for why
+ *   it's combined).
+ * - `draftEmail` — draft-only (`PROMPTS.EMAIL_DRAFT`), no score in the
+ *   output. Used by the automated batch flow (lib/agent/batch.ts), which
+ *   already has a confidence score from a separate
+ *   `lib/agent/score.ts#scoreApplication` call before deciding whether
+ *   drafting is even worth doing — see
+ *   docs/decisions/09-automated-batch-runs.md.
+ *
+ * `draftEmailWithScore`'s raw score/reasoning still needs to go through
+ * lib/agent/score.ts's `deriveScoreResult` to get the final clamped score
+ * and deterministic send/review/skip recommendation, same as
+ * `scoreApplication`'s output does.
  */
 import { z } from "zod";
 import { runJsonCompletion } from "@/lib/integrations/openai";
@@ -23,6 +35,11 @@ const draftAndScoreResponseSchema = z.object({
   scoreReasoning: z.string().min(1),
 });
 
+const draftOnlyResponseSchema = z.object({
+  subject: z.string().min(1),
+  body: z.string().min(1),
+});
+
 export interface DraftableCompany {
   name: string;
   industry: string | null;
@@ -34,21 +51,29 @@ export interface DraftableCompany {
   recentNews: string | null;
 }
 
-export interface DraftEmailWithScoreParams {
+interface DraftContext {
   company: DraftableCompany;
   contactName: string | null;
   contactTitle: string | null;
   project: Project;
-  /** The match score/reasoning from lib/agent/match.ts, given as context for the scoring half of this call. */
-  match: { score: number; reasoning: string };
   /** The specific role being applied for, if the human specified one when submitting the company. */
   roleAppliedFor?: string;
 }
 
-export interface DraftAndScoreResult {
+export interface DraftEmailWithScoreParams extends DraftContext {
+  /** The match score/reasoning from lib/agent/match.ts, given as context for the scoring half of this call. */
+  match: { score: number; reasoning: string };
+}
+
+export type DraftEmailParams = DraftContext;
+
+export interface DraftResult {
   subject: string;
   body: string;
   wordCount: number;
+}
+
+export interface DraftAndScoreResult extends DraftResult {
   /** Raw 1-10 score from the model — pass through lib/agent/score.ts's deriveScoreResult before persisting or displaying. */
   rawScore: number;
   scoreReasoning: string;
@@ -58,10 +83,10 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function buildUserContent(params: DraftEmailWithScoreParams): string {
-  const { company, contactName, contactTitle, project, match, roleAppliedFor } = params;
+function buildBaseUserContent(context: DraftContext): Record<string, unknown> {
+  const { company, contactName, contactTitle, project, roleAppliedFor } = context;
 
-  return JSON.stringify({
+  return {
     company: {
       name: company.name,
       industry: company.industry,
@@ -96,11 +121,27 @@ function buildUserContent(params: DraftEmailWithScoreParams): string {
       github: project.github,
       demo: project.demo,
     },
-    matchResult: {
-      score: match.score,
-      reasoning: match.reasoning,
-    },
-  });
+  };
+}
+
+/** Logs (doesn't throw) if the drafted body breaks the word-count constraint or uses a forbidden phrase — the human catches these in review either way, this is just for visibility. */
+function logDraftQualityWarnings(companyName: string, body: string): void {
+  const wordCount = countWords(body);
+  if (wordCount > EMAIL_CONSTRAINTS.MAX_WORD_COUNT) {
+    logger.warn("drafted email exceeded the word count constraint", {
+      company: companyName,
+      wordCount,
+      limit: EMAIL_CONSTRAINTS.MAX_WORD_COUNT,
+    });
+  }
+
+  const usedForbiddenPhrase = PROFILE.neverSay.find((phrase) => body.toLowerCase().includes(phrase.toLowerCase()));
+  if (usedForbiddenPhrase) {
+    logger.warn("drafted email used a forbidden phrase from PROFILE.neverSay", {
+      company: companyName,
+      phrase: usedForbiddenPhrase,
+    });
+  }
 }
 
 /**
@@ -111,38 +152,51 @@ function buildUserContent(params: DraftEmailWithScoreParams): string {
 export async function draftEmailWithScore(
   params: DraftEmailWithScoreParams,
 ): Promise<DraftAndScoreResult> {
+  const userContent = JSON.stringify({
+    ...buildBaseUserContent(params),
+    matchResult: { score: params.match.score, reasoning: params.match.reasoning },
+  });
+
   const response = await runJsonCompletion({
     systemPrompt: PROMPTS.EMAIL_DRAFT_AND_SCORE,
-    userContent: buildUserContent(params),
+    userContent,
     schema: draftAndScoreResponseSchema,
     label: "email-draft-and-score",
   });
 
-  const wordCount = countWords(response.body);
-
-  if (wordCount > EMAIL_CONSTRAINTS.MAX_WORD_COUNT) {
-    logger.warn("drafted email exceeded the word count constraint", {
-      company: params.company.name,
-      wordCount,
-      limit: EMAIL_CONSTRAINTS.MAX_WORD_COUNT,
-    });
-  }
-
-  const usedForbiddenPhrase = PROFILE.neverSay.find((phrase) =>
-    response.body.toLowerCase().includes(phrase.toLowerCase()),
-  );
-  if (usedForbiddenPhrase) {
-    logger.warn("drafted email used a forbidden phrase from PROFILE.neverSay", {
-      company: params.company.name,
-      phrase: usedForbiddenPhrase,
-    });
-  }
+  logDraftQualityWarnings(params.company.name, response.body);
 
   return {
     subject: response.subject,
     body: response.body,
-    wordCount,
+    wordCount: countWords(response.body),
     rawScore: response.score,
     scoreReasoning: response.scoreReasoning,
+  };
+}
+
+/**
+ * Generates the cold job-application email only, in its own OpenAI call, with no score in the output.
+ * Used by the automated batch flow, which already knows the confidence score (from a prior
+ * lib/agent/score.ts#scoreApplication call) before deciding to draft at all.
+ * @param params - the researched company, contact, matched project, and optional role being applied for
+ * @returns the drafted subject/body/word count
+ */
+export async function draftEmail(params: DraftEmailParams): Promise<DraftResult> {
+  const userContent = JSON.stringify(buildBaseUserContent(params));
+
+  const response = await runJsonCompletion({
+    systemPrompt: PROMPTS.EMAIL_DRAFT,
+    userContent,
+    schema: draftOnlyResponseSchema,
+    label: "email-draft",
+  });
+
+  logDraftQualityWarnings(params.company.name, response.body);
+
+  return {
+    subject: response.subject,
+    body: response.body,
+    wordCount: countWords(response.body),
   };
 }

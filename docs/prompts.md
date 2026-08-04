@@ -550,3 +550,85 @@ that distinction for the user reading the error.
 `tests/unit/openai-budget.test.ts`, which required extending its mocked
 `openai` module with a `MockAPIError` class carrying a `.status` property
 so `instanceof OpenAI.APIError` resolves correctly inside the mock).
+
+## Phase 18 — Automated batch runs: score-first ordering, client-driven loop
+
+**Context:** a design conversation, not a bug report — asked to walk
+through where "the agent" actually was in the pipeline (answer: nowhere;
+every step is a fixed, code-orchestrated single-shot LLM call, no
+tool-calling loop or autonomous decision-making — matches the original
+spec's prescribed step sequence). Given that framing, asked to automate
+discovery→research→draft as one flow: describe a target, discover and
+rank candidates by the model's own judgment, process best-first (so a
+rate limit or budget cutoff still leaves the strongest leads done), score
+before drafting so weak matches never get a wasted draft, and show live
+progress — with the human's only remaining touchpoint being review/send,
+unchanged from [[01-human-in-the-loop]].
+
+**Decision, asked directly and answered before building:** should
+confidence scoring stay bundled with drafting (cheap, current behavior)
+or move ahead of it (costs more per successful draft, but never drafts a
+company that would be rejected)? Chose decoupled. Kept the existing
+bundled path (`draftEmailWithScore`/`EMAIL_DRAFT_AND_SCORE`) completely
+untouched for the manual `/research` flow — this was a new, additive
+capability for batch runs specifically, not a global change to something
+already working and tested.
+
+**Decision, asked directly:** what should happen when one company in a
+batch errors — stop the whole run, or mark it and continue? Answered:
+mark and continue, no exceptions. This also turned out to be the more
+robust default independent of preference — OpenAI's per-minute rate
+limits often clear by the time the next company's Tavily/homepage steps
+finish, so a hard stop on the first hiccup would have been needlessly
+pessimistic.
+
+**Built:**
+- `PROMPTS.COMPANY_DISCOVERY` now asks for a `relevanceScore` per
+  candidate in the same single extraction call (no added cost);
+  `lib/agent/discover.ts` sorts by it descending and persists it
+  (`companies.discovery_score`, `supabase/migrations/008_discovery_score.sql`).
+- Revived standalone `PROMPTS.EMAIL_DRAFT` / `PROMPTS.CONFIDENCE_SCORE`
+  (split back out of the merged `EMAIL_DRAFT_AND_SCORE` from Phase
+  9/decision 05) plus `lib/agent/score.ts#scoreApplication` and
+  `lib/agent/draft.ts#draftEmail` — additive, `draftEmailWithScore` and
+  `deriveScoreResult` unchanged.
+- `lib/agent/batch.ts#processCompanyForBatch` — research (if needed) →
+  match → score → skip-or-draft, every phase independently caught,
+  never throws, always returns per-phase status. Idempotent: a company
+  that already has a draft short-circuits and reports it instead of
+  re-processing, so re-running a batch after a stop is safe.
+- `POST /api/batch/process-company` — one company in, one status object
+  out, always 200 for expected failures. Deliberately not behind
+  `lib/ratelimit.ts`'s shared 10/hour guard (sized for occasional manual
+  actions, not a 15-candidate intentional sequence) — the OpenAI budget
+  check remains the real backstop.
+- `DiscoverForm.tsx` — "Process all" button runs a plain client-side
+  `for` loop over the score-sorted candidates, `await`-ing
+  `/api/batch/process-company` once per company before starting the
+  next, updating a per-company status badge (queued/processing/drafted/
+  skipped/errored) and running counters live. No SSE, no background job
+  — the browser tab is the loop, same precedent as `CompanyForm.tsx`'s
+  existing (single-company) progress messages.
+
+**Decision:** the batch loop is client-driven, not a background job.
+Trades resumability-across-tab-close for zero new infrastructure; the
+idempotent-reprocessing design in `processCompanyForBatch` recovers most
+of the practical benefit anyway (re-clicking "Process all," or
+individually reprocessing from `/companies`, safely picks up unfinished
+work without duplicating already-done companies). Full reasoning,
+including every alternative considered, in
+`docs/decisions/09-automated-batch-runs.md`.
+
+**Verification performed:** `tsc --noEmit` (clean), `eslint` (clean),
+`vitest run` (73/73 passing — added `tests/unit/batch.test.ts` (7 tests
+covering idempotent re-run, research-skip for already-researched
+companies, and each independent failure phase),
+`tests/integration/batch.route.test.ts` (3 tests), extended
+`tests/unit/discover.test.ts` with score-sorting and clamping tests),
+`next build` (clean, 21 routes including
+`/api/batch/process-company`). Did **not** exercise the live batch flow
+in a browser: doing so would spend real OpenAI budget from the user's
+already rate-limited account, and no login was performed on the user's
+behalf to test it interactively (see the app's own prohibition on
+entering credentials/creating sessions on a user's behalf) — verification
+relied on the unit/integration test suite instead.

@@ -28,6 +28,7 @@ export function mapCompanyRow(row: CompanyRow): Company {
     hiringSignals: row.hiring_signals,
     recentNews: row.recent_news,
     researchStatus: row.research_status as Company["researchStatus"],
+    discoveryScore: row.discovery_score,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

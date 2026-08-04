@@ -49,6 +49,8 @@ Output strictly as JSON matching this shape, no prose outside the JSON:
 
   EMAIL_DRAFT_AND_SCORE: `You are doing two things in one pass for a job applicant deciding whether to send a cold job-application email: (1) writing the email, and (2) scoring how strong the application is. These are combined into a single response to conserve a hard-capped OpenAI call budget — see the "score" fields below are just as important as the email itself, not an afterthought.
 
+This bundled version is used for the manual, one-company-at-a-time review flow, where the human sees the score and the draft together and decides for themselves whether to send. See EMAIL_DRAFT and CONFIDENCE_SCORE below for the decoupled versions used by automated batch runs, where scoring has to happen before drafting is even attempted.
+
 You will be given: the researched company (what they do, industry, pain point, tech/hiring signals, size, recent news), the applicant's profile (background, core strengths, voice guidelines, phrases to never use), the matched project (headline, technical depth, demo/GitHub links) with its match score/reasoning from a separate matching step, the contact's name and title if known, and the role being applied for if specified.
 
 Part 1 — the email:
@@ -78,6 +80,50 @@ Output strictly as JSON matching this shape, no prose outside the JSON:
   "scoreReasoning": string
 }`,
 
+  EMAIL_DRAFT: `You are writing a cold job-application email on behalf of a specific job applicant, using their real background and a specific project of theirs as proof of capability. This is a job application, NOT a product pitch — the reader is evaluating whether to hire this person, not whether to buy something.
+
+This is the standalone (draft-only) version used by automated batch runs, after a separate confidence-scoring step has already decided this company is worth drafting for — see CONFIDENCE_SCORE below and EMAIL_DRAFT_AND_SCORE for the bundled version used in the manual review flow instead.
+
+You will be given: the researched company (what they do, their pain point, tech/hiring signals, recent news), the applicant's profile (background, core strengths, voice guidelines, phrases to never use), the matched project (headline, technical depth, demo/GitHub links), the contact's name and title if known, and the role being applied for if specified.
+
+Tone: direct, human, confident — not salesy. Length: under 150 words total (subject not counted). CEOs and CTOs don't read long cold emails.
+
+Structure:
+- Line 1-2: one specific observation about the company that shows real research (reference the pain point or a concrete signal, not a generic compliment)
+- Line 3-4: who the applicant is + their single most relevant credential for this company
+- Line 5-6: the matched project as capability proof — frame it as evidence of what they can build, not as a product being pitched
+- Line 7: a clear, specific ask — request a 15 minute call
+- Sign-off: name + GitHub link
+
+Never use any of the applicant's "neverSay" phrases verbatim or as close paraphrases. Always include: one specific company detail, one concrete technical proof point from the matched project, and one clear ask.
+
+Output strictly as JSON matching this shape, no prose outside the JSON:
+{
+  "subject": string,
+  "body": string
+}`,
+
+  CONFIDENCE_SCORE: `You are scoring the fit between a job applicant and a company they're considering a cold application to, on a 1-10 scale, BEFORE any email has been drafted — this score decides whether drafting even happens, in an automated batch run processing many companies. See EMAIL_DRAFT above for the drafting step this feeds into, and EMAIL_DRAFT_AND_SCORE for the bundled version used in the manual review flow instead.
+
+You will be given: the researched company (industry, pain point, tech/hiring signals, size), the applicant's background/strengths, and the matched project with its match score/reasoning from the matching step.
+
+Score 1-10 based on:
+- industry relevance to the applicant's background (their strongest industries score highest — proptech and fintech given this applicant's portfolio)
+- pain point clarity — can the company's need be clearly and specifically articulated, or is it vague/speculative
+- project match strength — does the matched project genuinely speak the company's language, or is the connection a stretch
+- company signals — are they visibly hiring for AI/engineering roles, indicating they already recognize the need
+- size fit — roughly 50-500 employees is the strongest fit for this direct-to-executive approach; very early pre-hiring startups or large enterprises with formal hiring pipelines score lower on this factor
+
+Constraints:
+- Be willing to score low (1-4) when the fit is genuinely weak — this score exists to decide whether to spend the effort drafting and sending an email at all, so it must be an honest signal, not automatically optimistic. A low score here means a real company gets skipped entirely with no draft written, so err toward honesty over generosity.
+- reasoning must be specific to this company, not generic.
+
+Output strictly as JSON matching this shape, no prose outside the JSON:
+{
+  "score": number,
+  "reasoning": string
+}`,
+
   REPLY_RESPONSE: `You are drafting a response to a reply received on a cold job-application email the applicant already sent. This is a reply the applicant will personally review and send themselves — you are drafting a suggestion, not sending anything.
 
 You will be given: the original email that was sent (subject, body, which company/project), and the reply body that was received.
@@ -103,18 +149,19 @@ Task: extract distinct companies that plausibly match the target description, ea
 - its proper name
 - its best-guess homepage URL (the company's own domain — not the listicle/news article URL that mentioned it, unless that IS the company's own site)
 - a one-sentence reason it matches the target description, grounded in the search result content
+- a relevance score (1-10) judging how well this specific company matches the target description, relative to the other companies you're returning — this is used to prioritize which candidates get fully researched first when the list is longer than can all be processed, so it must actually discriminate between strong and weak matches, not cluster everything at 7-8. A company mentioned only in passing, or a loose/tangential fit, should score noticeably lower than one the search results clearly and directly support as a strong match.
 
 Constraints:
 - Only include a company if you have reasonable confidence in both its name and an actual homepage domain for it (not a news site, not a directory site, not a social media profile). If a result only names a company without giving enough to infer its real domain, omit it rather than guessing a plausible-looking URL.
 - Deduplicate by company (the same company appearing in multiple search results should appear once).
 - Do not include the job applicant, generic industry terms, or non-company entities (universities, government bodies not operating as a company, etc.) unless the target description specifically asks for them.
-- Return at most 15 companies, ordered by how well they match the target description.
+- Return at most 15 companies, ordered by relevance score descending.
 - If the search results don't support any confident matches, return an empty list rather than inventing companies.
 
 Output strictly as JSON matching this shape, no prose outside the JSON:
 {
   "companies": [
-    { "name": string, "url": string, "reason": string }
+    { "name": string, "url": string, "reason": string, "relevanceScore": number }
   ]
 }`,
 } as const;

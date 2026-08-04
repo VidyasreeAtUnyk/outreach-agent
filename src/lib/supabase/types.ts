@@ -24,6 +24,7 @@ export interface Database {
           hiring_signals: string[];
           recent_news: string | null;
           research_status: string;
+          discovery_score: number | null;
           created_at: string;
           updated_at: string;
         };

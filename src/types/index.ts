@@ -43,6 +43,8 @@ export interface Company {
   recentNews: string | null;
   /** 'discovered' = found via lib/agent/discover.ts, not yet researched (most fields null). 'researched' = full pipeline has run. */
   researchStatus: ResearchStatus;
+  /** 1-10 relevance to the discovery query that found this company, from lib/agent/discover.ts. Null for companies added manually via /research. Drives batch-run processing order — see lib/agent/batch.ts. */
+  discoveryScore: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -151,6 +153,8 @@ export interface DiscoveredCompany {
   url: string;
   /** Why this candidate matched the discovery query, from the model's extraction. */
   reason: string;
+  /** 1-10 relevance to the discovery query, clamped. The `discovered` array returned by discoverCompanies is already sorted by this, descending. */
+  score: number;
   /** True if this candidate matched an existing company row rather than being newly inserted. */
   alreadyKnown: boolean;
 }

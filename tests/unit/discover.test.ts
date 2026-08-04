@@ -56,8 +56,8 @@ describe("discoverCompanies", () => {
     ]);
     runJsonCompletionMock.mockResolvedValue({
       companies: [
-        { name: "Wokeworks", url: "https://wokeworks.ai", reason: "AI agents, UAE presence" },
-        { name: "Sample AI", url: "https://sampleai.com", reason: "AI agents, UAE presence" },
+        { name: "Wokeworks", url: "https://wokeworks.ai", reason: "AI agents, UAE presence", relevanceScore: 9 },
+        { name: "Sample AI", url: "https://sampleai.com", reason: "AI agents, UAE presence", relevanceScore: 6 },
       ],
     });
 
@@ -73,10 +73,47 @@ describe("discoverCompanies", () => {
     expect(result.discovered[0]?.alreadyKnown).toBe(false);
   });
 
+  it("sorts discovered candidates by relevance score descending, regardless of the order returned", async () => {
+    tavilySearchMock.mockResolvedValue([{ title: "t", url: "https://news.example.com", content: "c" }]);
+    runJsonCompletionMock.mockResolvedValue({
+      companies: [
+        { name: "Weak Match", url: "https://weak.example.com", reason: "loosely related", relevanceScore: 3 },
+        { name: "Strong Match", url: "https://strong.example.com", reason: "directly relevant", relevanceScore: 9 },
+        { name: "Mid Match", url: "https://mid.example.com", reason: "somewhat relevant", relevanceScore: 6 },
+      ],
+    });
+
+    const result = await discoverCompanies({
+      query: "AI agent companies with UAE presence",
+      userId: "user-1",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      supabase: createFakeSupabase([]) as any,
+    });
+
+    expect(result.discovered.map((c) => c.name)).toEqual(["Strong Match", "Mid Match", "Weak Match"]);
+    expect(result.discovered.map((c) => c.score)).toEqual([9, 6, 3]);
+  });
+
+  it("clamps an out-of-range relevance score into 1-10", async () => {
+    tavilySearchMock.mockResolvedValue([{ title: "t", url: "https://news.example.com", content: "c" }]);
+    runJsonCompletionMock.mockResolvedValue({
+      companies: [{ name: "Wokeworks", url: "https://wokeworks.ai", reason: "matches", relevanceScore: 15 }],
+    });
+
+    const result = await discoverCompanies({
+      query: "AI agent companies with UAE presence",
+      userId: "user-1",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      supabase: createFakeSupabase([]) as any,
+    });
+
+    expect(result.discovered[0]?.score).toBe(10);
+  });
+
   it("marks a candidate as alreadyKnown instead of inserting a duplicate when its domain already exists", async () => {
     tavilySearchMock.mockResolvedValue([{ title: "t", url: "https://news.example.com", content: "c" }]);
     runJsonCompletionMock.mockResolvedValue({
-      companies: [{ name: "Wokeworks", url: "https://www.wokeworks.ai/about", reason: "matches" }],
+      companies: [{ name: "Wokeworks", url: "https://www.wokeworks.ai/about", reason: "matches", relevanceScore: 8 }],
     });
 
     const result = await discoverCompanies({
@@ -88,6 +125,6 @@ describe("discoverCompanies", () => {
     });
 
     expect(result.discovered).toHaveLength(1);
-    expect(result.discovered[0]).toMatchObject({ id: "existing-1", alreadyKnown: true });
+    expect(result.discovered[0]).toMatchObject({ id: "existing-1", alreadyKnown: true, score: 8 });
   });
 });
